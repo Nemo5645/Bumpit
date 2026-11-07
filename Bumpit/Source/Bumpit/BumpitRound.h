@@ -11,8 +11,16 @@ class UBumpitRound : public UTickableWorldSubsystem
 {
     GENERATED_BODY()
 public:
+    virtual void Initialize(FSubsystemCollectionBase& Collection) override;
+    virtual void Deinitialize() override;
     virtual void Tick(float DeltaTime) override;
     virtual TStatId GetStatId() const override;
+
+    // Tilts the current ball has left; using the last one ends the run.
+    static int32 TiltsLeft(const UObject* Context);
+
+    // The share of the current ball's tilts that have been used, 0-1.
+    static float TiltLevel(const UObject* Context);
 
     // The ball's score before its lane multiplier, and a 0-1 pulse after each hit.
     static int32 LiveBallScore(const UObject* Context, float& OutPulse);
@@ -73,6 +81,9 @@ private:
     static int32 TargetFor(int32 Round);
     static int32 BreakBumpers(AActor* Table, TArray<int32>& Cells);
     void ShuffleLanes(AActor* Table);
+    void TickBlackout(float DeltaTime);
+    void VoidBall();
+    void DrawOverlay(class AHUD* Hud, class UCanvas* Canvas);
 
     EState State = EState::Playing;
     int32 Round = 1;
@@ -85,6 +96,10 @@ private:
     TWeakObjectPtr<AActor> TableActor;
     FVector StillAnchor = FVector::ZeroVector;
     float StillSeconds = 0;
+    int32 StallKicks = 0;
+    bool bVoided = false;
+    float BlackoutSeconds = -1;
+    FDelegateHandle PostRenderHandle;
     int32 LastHits = 0;
     double PulseStart = -1;
 };

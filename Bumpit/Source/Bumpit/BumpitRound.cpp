@@ -1,9 +1,12 @@
 #include "BumpitRound.h"
+#include "BumpitTiltView.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/TextRenderComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/HUD.h"
+#include "GameFramework/PlayerController.h"
 #include "Kismet/GameplayStatics.h"
 
 namespace
@@ -22,8 +25,18 @@ constexpr int32 LaneSet[] = {1,2,5,2,10,2,5,2,1};
 // Engraved labels, in the table's local space on the goal cells.
 constexpr double LaneLabelX = -312, LaneLabelFirstY = -256, LaneLabelStepY = 64, LaneLabelZ = 8, LaneLabelSize = 32;
 // A ball that stays inside StillRadius for StallSeconds gets kicked back up the table.
+// Every stall uses a tilt; the last tilt blacks out the view and ends the run on 0 points.
 constexpr float StallSeconds = 5;
+constexpr int32 MaxTilts = 5;
+// Long enough for the last shake to be seen before the screen is fully black.
+constexpr float BlackoutFade = 1.1f;
 constexpr double StillRadius = 6, StallKickUp = 750, StallKickSide = 220, StallKickHop = 120;
+// A ball stopped on the launch rail is not the player's stall: it goes back out at a launch speed, free.
+constexpr double LaunchRailY = 288, RailKick = 1100;
+// Table-space point below the lost-ball line, where the last tilted ball goes.
+const FVector VoidedBallSpot(0,0,-200);
+// The HUD takes Space only in SettlePhase. A tilted-out run sits in EndingPhase until the restart line is up.
+constexpr int32 SettlePhase = 2, EndingPhase = 3;
 // Matches RoundScore in BP_BumpitHUD, before the lane multiplier.
 constexpr int32 BaseBallScore = 100, ScorePerHit = 25;
 constexpr double PulseSeconds = .18;
@@ -40,6 +53,19 @@ UPrimitiveComponent* BallOf(const AActor* Table)
     return Property ? Cast<UPrimitiveComponent>(Property->GetObjectPropertyValue_InContainer(Table)) : nullptr;
 }
 
+AHUD* HudOf(const UWorld* World)
+{
+    const APlayerController* Player = World ? World->GetFirstPlayerController() : nullptr;
+    return Player ? Player->GetHUD() : nullptr;
+}
+
+void SetPhase(const UWorld* World, int32 Phase)
+{
+    AHUD* Hud = HudOf(World);
+    if (const FIntProperty* Property = FindVariable<FIntProperty>(Hud,TEXT("Phase")))
+        Property->SetPropertyValue_InContainer(Hud,Phase);
+}
+
 int32 HitsOf(const AActor* Table)
 {
     const FIntProperty* Property = FindVariable<FIntProperty>(Table,TEXT("Hits"));
@@ -52,14 +78,33 @@ TStatId UBumpitRound::GetStatId() const
     RETURN_QUICK_DECLARE_CYCLE_STAT(UBumpitRound,STATGROUP_Tickables);
 }
 
+void UBumpitRound::Initialize(FSubsystemCollectionBase& Collection)
+{
+    Super::Initialize(Collection);
+    PostRenderHandle = AHUD::OnHUDPostRender.AddUObject(this,&UBumpitRound::DrawOverlay);
+}
+
+void UBumpitRound::Deinitialize()
+{
+    AHUD::OnHUDPostRender.Remove(PostRenderHandle);
+    Super::Deinitialize();
+}
+
 void UBumpitRound::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
+    if (BlackoutSeconds >= 0)
+    {
+        TickBlackout(DeltaTime);
+        return;
+    }
     const AActor* Table = TableActor.Get();
     UPrimitiveComponent* Ball = BallOf(Table);
     if (!Ball || !Ball->IsSimulatingPhysics())
     {
         StillSeconds = 0;
+        StallKicks = 0;
+        bVoided = false;
         return;
     }
     const FVector Position = Ball->GetComponentLocation();
@@ -72,8 +117,59 @@ void UBumpitRound::Tick(float DeltaTime)
     StillSeconds += DeltaTime;
     if (StillSeconds < StallSeconds) return;
     StillSeconds = 0;
+    const FTransform TableSpace = Table->GetActorTransform();
+    if (TableSpace.InverseTransformPosition(Position).Y >= LaunchRailY)
+    {
+        Ball->SetPhysicsLinearVelocity(TableSpace.TransformVectorNoScale(FVector(RailKick,0,0)));
+        return;
+    }
+    ++StallKicks;
+    UBumpitTiltView::Shake(GetWorld());
+    if (StallKicks >= MaxTilts)
+    {
+        BlackoutSeconds = 0;
+        return;
+    }
     const FVector Kick(StallKickUp,FMath::FRandRange(-StallKickSide,StallKickSide),StallKickHop);
-    Ball->SetPhysicsLinearVelocity(Table->GetActorTransform().TransformVectorNoScale(Kick));
+    Ball->SetPhysicsLinearVelocity(TableSpace.TransformVectorNoScale(Kick));
+}
+
+void UBumpitRound::TickBlackout(float DeltaTime)
+{
+    const bool bWasFading = BlackoutSeconds < BlackoutFade;
+    BlackoutSeconds += DeltaTime;
+    if (bWasFading && BlackoutSeconds >= BlackoutFade) VoidBall();
+    if (State == EState::GameOver && BlackoutSeconds >= BlackoutFade+UBumpitTiltView::RestartDelay())
+        SetPhase(GetWorld(),SettlePhase);
+}
+
+// Settles the ball out of sight; the screen stays black until Space restarts the run.
+void UBumpitRound::VoidBall()
+{
+    const AActor* Table = TableActor.Get();
+    UPrimitiveComponent* Ball = BallOf(Table);
+    if (!Ball) return;
+    bVoided = true;
+    Ball->SetWorldLocation(Table->GetActorTransform().TransformPosition(VoidedBallSpot),false,nullptr,ETeleportType::TeleportPhysics);
+}
+
+void UBumpitRound::DrawOverlay(AHUD* Hud, UCanvas* Canvas)
+{
+    if (!Hud || Hud->GetWorld() != GetWorld()) return;
+    const float Fade = FMath::Clamp(BlackoutSeconds/BlackoutFade,0.f,1.f);
+    UBumpitTiltView::DrawOverlay(Hud,Canvas,Fade*Fade,BlackoutSeconds-BlackoutFade);
+}
+
+int32 UBumpitRound::TiltsLeft(const UObject* Context)
+{
+    const UBumpitRound* Rules = Get(Context);
+    return Rules ? MaxTilts-Rules->StallKicks : MaxTilts;
+}
+
+float UBumpitRound::TiltLevel(const UObject* Context)
+{
+    const UBumpitRound* Rules = Get(Context);
+    return Rules ? float(Rules->StallKicks)/MaxTilts : 0;
 }
 
 int32 UBumpitRound::LiveBallScore(const UObject* Context, float& OutPulse)
@@ -112,20 +208,27 @@ FString UBumpitRound::RecordBall(const UObject* Context, int32 Points)
     Rules->RoundPoints += Points;
     const bool bReached = Rules->RoundPoints >= Target;
     const int32 BallsLeft = MaxBalls-Rules->BallsUsed;
+    if (Rules->bVoided)
+    {
+        Rules->State = EState::GameOver;
+        SetPhase(Rules->GetWorld(),EndingPhase);
+        return TEXT("틸트를 모두 사용했습니다.");
+    }
     if (BallsLeft <= 0)
     {
         Rules->State = bReached ? EState::Cleared : EState::GameOver;
-        return bReached ? FString::Printf(TEXT("통과. 다음은 %d."),TargetFor(Rules->Round+1))
-                        : FString::Printf(TEXT("끝났다. %d점 모자랐다."),Target-Rules->RoundPoints);
+        return bReached ? FString::Printf(TEXT("라운드 클리어! 다음 목표 %d"),TargetFor(Rules->Round+1))
+                        : FString::Printf(TEXT("게임 오버 · 목표까지 %d점 부족"),Target-Rules->RoundPoints);
     }
-    if (bAlreadyReached) return FString::Printf(TEXT("+%d. 더 쳐줬다. 구슬 %d."),Points,BallsLeft);
-    if (bReached) return FString::Printf(TEXT("목표 넘김. 이제 더 준다. 구슬 %d."),BallsLeft);
-    return FString::Printf(TEXT("+%d. 구슬 %d."),Points,BallsLeft);
+    if (bAlreadyReached) return FString::Printf(TEXT("보너스 크레딧 지급 · 남은 구슬 %d개"),BallsLeft);
+    if (bReached) return FString::Printf(TEXT("목표 달성! 이제 크레딧 보너스 · 남은 구슬 %d개"),BallsLeft);
+    return FString::Printf(TEXT("이번 공 +%d점 · 남은 구슬 %d개"),Points,BallsLeft);
 }
 
 int32 UBumpitRound::AdjustCredits(const UObject* Context, int32 Base)
 {
     const UBumpitRound* Rules = Get(Context);
+    if (Rules && Rules->bVoided) return 0;
     if (!Rules || Rules->RoundPoints < TargetFor(Rules->Round)) return Base;
     return FMath::CeilToInt(Base*ClearedCreditRate);
 }
@@ -239,8 +342,8 @@ bool UBumpitRound::IsCellLocked(const UObject* Context, int32 Cell)
 FString UBumpitRound::CellLockMessage(const UObject* Context, int32 Cell)
 {
     const UBumpitRound* Rules = Get(Context);
-    if (Rules && Rules->BallsUsed == 0) return TEXT("그건 못 옮긴다.");
-    return TEXT("구슬을 다 쓸 때까지 못 건드린다.");
+    if (Rules && Rules->BallsUsed == 0) return TEXT("살아남은 범퍼는 고정되어 옮길 수 없습니다.");
+    return TEXT("구슬을 모두 쓸 때까지 판과 상점이 잠겨 있습니다.");
 }
 
 void UBumpitRound::RestartGame(const UObject* Context)
@@ -264,7 +367,7 @@ FString UBumpitRound::ContinueLabel(const UObject* Context)
     switch (Rules->State)
     {
     case EState::Cleared: return TEXT("다음 라운드  [SPACE]");
-    case EState::GameOver: return TEXT("다시  [SPACE]");
+    case EState::GameOver: return TEXT("다시 시작  [SPACE]");
     default: return TEXT("다음 구슬  [SPACE]");
     }
 }
@@ -274,8 +377,8 @@ FString UBumpitRound::ReadyMessage(const UObject* Context)
     const UBumpitRound* Rules = Get(Context);
     if (!Rules) return FString();
     if (Rules->BallsUsed > 0)
-        return FString::Printf(TEXT("판 잠김. 구슬 %d."),MaxBalls-Rules->BallsUsed);
-    return FString::Printf(TEXT("범퍼 %d개 박살. 남은 건 못 건드린다."),Rules->LastBroken);
+        return FString::Printf(TEXT("판이 잠겼습니다 · 남은 구슬 %d개"),MaxBalls-Rules->BallsUsed);
+    return FString::Printf(TEXT("범퍼 %d개가 부서졌습니다. 남은 범퍼는 고정, 배율이 바뀌었습니다."),Rules->LastBroken);
 }
 
 int32 UBumpitRound::NextStation(const UObject* Context)

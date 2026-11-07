@@ -21,7 +21,15 @@ public:
     UFUNCTION(BlueprintPure, Category="Bumpit|UI", meta=(WorldContext="Context"))
     static int32 NextSelection(const UObject* Context, int32 Station, int32 Selected);
 
-    // True on the frame the shop arrow is clicked.
+    // Draws the arrow back to the table on the shop screen.
+    UFUNCTION(BlueprintCallable, Category="Bumpit|UI", meta=(DefaultToSelf="Hud"))
+    static void DrawTableArrow(AHUD* Hud, double Scale, double OffsetX, double OffsetY);
+
+    // True on the frame the side arrow is clicked, on the table or in the shop.
     UFUNCTION(BlueprintPure, Category="Bumpit|UI", meta=(WorldContext="Context"))
     static bool ShopArrowClicked(const UObject* Context, int32 Station);
+
+    // Where the side arrow leads from this station: the table and the shop lead to each other.
+    UFUNCTION(BlueprintPure, Category="Bumpit|UI")
+    static int32 ArrowStation(int32 Station);
 };
