@@ -26,4 +26,16 @@ public:
     // Recolors every HUD color literal to the workshop palette and sets the Label font.
     // Returns how many color pins changed.
     UFUNCTION(BlueprintCallable, Category="Bumpit") static int32 ApplyUiStyle(UBlueprint* Blueprint, UFont* Font);
+
+    // Sends the shop arrow's click to Visit(shop). Returns links made.
+    UFUNCTION(BlueprintCallable, Category="Bumpit") static int32 ApplyShopArrow(UBlueprint* Blueprint);
+
+    // Puts the side arrow on the shop screen and sends its click to the table. Returns links made.
+    UFUNCTION(BlueprintCallable, Category="Bumpit") static int32 ApplyShopReturn(UBlueprint* Blueprint);
+
+    // Fits the camera views to the narrowed room and sends settlement to the score screen. Returns changes made.
+    UFUNCTION(BlueprintCallable, Category="Bumpit") static int32 ApplyRoomViews(UBlueprint* Blueprint);
+
+    // Replaces the HUD's sentences with short word-style labels. Returns strings changed.
+    UFUNCTION(BlueprintCallable, Category="Bumpit") static int32 ApplyWordText(UBlueprint* Blueprint);
 };

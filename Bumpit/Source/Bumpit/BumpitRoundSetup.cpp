@@ -308,6 +308,220 @@ int32 UBumpitRoundSetup::ApplyUiStyle(UBlueprint* Blueprint, UFont* Font)
     return Changed;
 }
 
+int32 UBumpitRoundSetup::ApplyShopArrow(UBlueprint* Blueprint)
+{
+    int32 Links = 0;
+#if WITH_EDITOR
+    UEdGraph* Board = Blueprint ? FindGraph(Blueprint,TEXT("UpdateBoard")) : nullptr;
+    UEdGraphNode* UpdateView = Board ? FindNode(Board,TEXT("K2Node_CallFunction_0")) : nullptr;
+    UEdGraphPin* ViewEntry = UpdateView ? UpdateView->FindPin(TEXT("execute")) : nullptr;
+    UFunction* Clicked = UBumpitBoardUi::StaticClass()->FindFunctionByName(TEXT("ShopArrowClicked"));
+    UFunction* Visit = Blueprint && Blueprint->SkeletonGeneratedClass
+        ? Blueprint->SkeletonGeneratedClass->FindFunctionByName(TEXT("Visit")) : nullptr;
+    if (!ViewEntry || ViewEntry->LinkedTo.Num() != 1 || !Clicked || !Visit) return 0;
+
+    UEdGraphPin* Previous = ViewEntry->LinkedTo[0];
+    const UEdGraphSchema* Schema = Board->GetSchema();
+    const auto Link = [&](UEdGraphPin* A, UEdGraphPin* B)
+    {
+        if (A && B && Schema->TryCreateConnection(A,B)) ++Links;
+        else UE_LOG(LogTemp,Error,TEXT("Shop arrow link failed"));
+    };
+    Board->Modify();
+    const int32 X = UpdateView->NodePosX, Y = UpdateView->NodePosY - 700;
+    UK2Node_VariableGet* Station = AddSelfGet(Board,TEXT("Station"),X-440,Y);
+    UK2Node_CallFunction* Arrow = AddCall(Board,Clicked,X-220,Y);
+    UK2Node_IfThenElse* Branch = AddBranch(Board,X,Y);
+    UK2Node_CallFunction* GoShop = AddCall(Board,Visit,X+220,Y);
+    GoShop->FindPin(TEXT("NewStation"))->DefaultValue = TEXT("2");
+    Previous->BreakLinkTo(ViewEntry);
+    Link(Station->FindPin(TEXT("Station")),Arrow->FindPin(TEXT("Station")));
+    Link(Arrow->FindPin(TEXT("ReturnValue")),Branch->FindPin(TEXT("Condition")));
+    Link(Previous,Branch->FindPin(TEXT("execute")));
+    Link(Branch->FindPin(TEXT("then")),GoShop->FindPin(TEXT("execute")));
+    Link(Branch->FindPin(TEXT("else")),ViewEntry);
+    Link(GoShop->FindPin(TEXT("then")),ViewEntry);
+    Blueprint->Modify();
+#endif
+    return Links;
+}
+
+int32 UBumpitRoundSetup::ApplyShopReturn(UBlueprint* Blueprint)
+{
+    int32 Links = 0;
+#if WITH_EDITOR
+    UEdGraph* Shop = Blueprint ? FindGraph(Blueprint,TEXT("DrawShop")) : nullptr;
+    UEdGraph* Board = Blueprint ? FindGraph(Blueprint,TEXT("UpdateBoard")) : nullptr;
+    UEdGraphNode* LastLabel = Shop ? FindNode(Shop,TEXT("K2Node_CallFunction_32")) : nullptr;
+    UFunction* DrawArrow = UBumpitBoardUi::StaticClass()->FindFunctionByName(TEXT("DrawTableArrow"));
+    UFunction* ArrowStation = UBumpitBoardUi::StaticClass()->FindFunctionByName(TEXT("ArrowStation"));
+    if (!Board || !LastLabel || !DrawArrow || !ArrowStation) return 0;
+
+    // UpdateBoard: follow the existing arrow branch to the Visit call it fires.
+    UEdGraphPin* NewStation = nullptr;
+    for (UEdGraphNode* Node : Board->Nodes)
+    {
+        const UK2Node_CallFunction* Call = Cast<UK2Node_CallFunction>(Node);
+        if (!Call || Call->GetFunctionName() != TEXT("ShopArrowClicked")) continue;
+        UEdGraphPin* Clicked = Node->FindPin(TEXT("ReturnValue"));
+        UEdGraphNode* Branch = Clicked && Clicked->LinkedTo.Num() == 1 ? Clicked->LinkedTo[0]->GetOwningNode() : nullptr;
+        UEdGraphPin* Then = Branch ? Branch->FindPin(TEXT("then")) : nullptr;
+        NewStation = Then && Then->LinkedTo.Num() == 1 ? Then->LinkedTo[0]->GetOwningNode()->FindPin(TEXT("NewStation")) : nullptr;
+    }
+    if (!NewStation) return 0;
+
+    const UEdGraphSchema* Schema = Shop->GetSchema();
+    const auto Link = [&](UEdGraphPin* A, UEdGraphPin* B)
+    {
+        if (A && B && Schema->TryCreateConnection(A,B)) ++Links;
+        else UE_LOG(LogTemp,Error,TEXT("Shop return link failed"));
+    };
+    Shop->Modify();
+    Board->Modify();
+    const int32 X = LastLabel->NodePosX, Y = LastLabel->NodePosY + 260;
+    UK2Node_CallFunction* Arrow = AddCall(Shop,DrawArrow,X+240,Y);
+    UK2Node_VariableGet* Scale = AddSelfGet(Shop,TEXT("ScaleHUD"),X,Y);
+    UK2Node_VariableGet* OffsetX = AddSelfGet(Shop,TEXT("OffsetX"),X,Y+80);
+    UK2Node_VariableGet* OffsetY = AddSelfGet(Shop,TEXT("OffsetY"),X,Y+160);
+    Link(LastLabel->FindPin(TEXT("then")),Arrow->FindPin(TEXT("execute")));
+    Link(Scale->FindPin(TEXT("ScaleHUD")),Arrow->FindPin(TEXT("Scale")));
+    Link(OffsetX->FindPin(TEXT("OffsetX")),Arrow->FindPin(TEXT("OffsetX")));
+    Link(OffsetY->FindPin(TEXT("OffsetY")),Arrow->FindPin(TEXT("OffsetY")));
+    const UEdGraphNode* Visit = NewStation->GetOwningNode();
+    UK2Node_VariableGet* Station = AddSelfGet(Board,TEXT("Station"),Visit->NodePosX-440,Visit->NodePosY+160);
+    UK2Node_CallFunction* Destination = AddCall(Board,ArrowStation,Visit->NodePosX-220,Visit->NodePosY+160);
+    Link(Station->FindPin(TEXT("Station")),Destination->FindPin(TEXT("Station")));
+    Link(Destination->FindPin(TEXT("ReturnValue")),NewStation);
+    Blueprint->Modify();
+#endif
+    return Links;
+}
+
+int32 UBumpitRoundSetup::ApplyRoomViews(UBlueprint* Blueprint)
+{
+    int32 Changes = 0;
+#if WITH_EDITOR
+    if (!Blueprint) return 0;
+    const auto SetPin = [&](const TCHAR* GraphName, const TCHAR* NodeName, const TCHAR* PinName, double Value)
+    {
+        UEdGraph* Graph = FindGraph(Blueprint,GraphName);
+        UEdGraphNode* Node = Graph ? FindNode(Graph,NodeName) : nullptr;
+        UEdGraphPin* Pin = Node ? Node->FindPin(PinName) : nullptr;
+        if (!Pin)
+        {
+            UE_LOG(LogTemp,Error,TEXT("Room view pin missing: %s.%s.%s"),GraphName,NodeName,PinName);
+            return;
+        }
+        Node->Modify();
+        Pin->DefaultValue = FString::SanitizeFloat(Value);
+        ++Changes;
+    };
+    const auto SetVector = [&](const TCHAR* GraphName, const TCHAR* NodeName, double X, double Y, double Z)
+    {
+        SetPin(GraphName,NodeName,TEXT("X"),X);
+        SetPin(GraphName,NodeName,TEXT("Y"),Y);
+        SetPin(GraphName,NodeName,TEXT("Z"),Z);
+    };
+    // The opening view stands inside the new walls.
+    SetVector(TEXT("Visit"),TEXT("K2Node_CallFunction_4"),-900,-340,160);
+    // Settlement looks up at the score screen instead of the terminal behind the wall.
+    SetVector(TEXT("Visit"),TEXT("K2Node_CallFunction_12"),-280,0,175);
+    SetVector(TEXT("Visit"),TEXT("K2Node_CallFunction_13"),431,0,345);
+    // Walking away from it lands in front of the machine, not behind the wall.
+    SetVector(TEXT("Walk"),TEXT("K2Node_CallFunction_11"),-532,0,160);
+    SetVector(TEXT("Walk"),TEXT("K2Node_CallFunction_12"),100,0,20);
+    // The floor now ends at the side walls.
+    SetPin(TEXT("ClearFloor"),TEXT("K2Node_CallFunction_5"),TEXT("Value"),375);
+    // The terminal is walled off, so looking its way must not click it. Its box moves out of reach.
+    SetVector(TEXT("Focus"),TEXT("K2Node_CallFunction_8"),9000,9000,9000);
+    SetPin(TEXT("Focus"),TEXT("K2Node_CallFunction_9"),TEXT("X"),9100);
+    SetPin(TEXT("Focus"),TEXT("K2Node_CallFunction_9"),TEXT("Y"),9100);
+    SetPin(TEXT("Focus"),TEXT("K2Node_CallFunction_9"),TEXT("Z"),9100);
+
+    // DrawTerminal: only the settlement prompt remains; the score is on the screen in the room.
+    UEdGraph* Terminal = FindGraph(Blueprint,TEXT("DrawTerminal"));
+    UEdGraphNode* Entry = Terminal ? FindNode(Terminal,TEXT("K2Node_FunctionEntry_0")) : nullptr;
+    UFunction* Draw = UBumpitBoardUi::StaticClass()->FindFunctionByName(TEXT("DrawSettlement"));
+    if (!Entry || !Draw) return 0;
+    const UEdGraphSchema* Schema = Terminal->GetSchema();
+    const auto Link = [&](UEdGraphPin* A, UEdGraphPin* B)
+    {
+        if (A && B && Schema->TryCreateConnection(A,B)) ++Changes;
+        else UE_LOG(LogTemp,Error,TEXT("Settlement link failed"));
+    };
+    Terminal->Modify();
+    const int32 X = Entry->NodePosX, Y = Entry->NodePosY-400;
+    UK2Node_CallFunction* Prompt = AddCall(Terminal,Draw,X+240,Y);
+    UK2Node_VariableGet* Scale = AddSelfGet(Terminal,TEXT("ScaleHUD"),X,Y);
+    UK2Node_VariableGet* OffsetX = AddSelfGet(Terminal,TEXT("OffsetX"),X,Y+80);
+    UK2Node_VariableGet* OffsetY = AddSelfGet(Terminal,TEXT("OffsetY"),X,Y+160);
+    UEdGraphPin* Then = Entry->FindPin(TEXT("then"));
+    Then->BreakAllPinLinks();
+    Link(Then,Prompt->FindPin(TEXT("execute")));
+    Link(Scale->FindPin(TEXT("ScaleHUD")),Prompt->FindPin(TEXT("Scale")));
+    Link(OffsetX->FindPin(TEXT("OffsetX")),Prompt->FindPin(TEXT("OffsetX")));
+    Link(OffsetY->FindPin(TEXT("OffsetY")),Prompt->FindPin(TEXT("OffsetY")));
+    Blueprint->Modify();
+#endif
+    return Changes;
+}
+
+int32 UBumpitRoundSetup::ApplyWordText(UBlueprint* Blueprint)
+{
+    int32 Changed = 0;
+#if WITH_EDITOR
+    if (!Blueprint) return 0;
+    const TMap<FString, FString> Lines = {
+        {TEXT("작업실   /   개조 핀볼 머신 및 정산 단말기"), TEXT("CELL 08")},
+        {TEXT("가운데 +를 기계에 맞추고 클릭해 가까이 보세요."), TEXT("기계 조준 · 클릭")},
+        {TEXT("기계를 클릭해 가까이 보세요. 시선을 돌리려면 R을 누르세요."), TEXT("기계 조준 · 클릭")},
+        {TEXT("구매 후 [1] 핀볼대로 이동"), TEXT("[1] 기계")},
+        {TEXT("Space를 눌렀다 떼면 발사"), TEXT("Space  충전 · 발사")},
+        {TEXT("좌클릭 배치 / 이동   ·   우클릭 회수"), TEXT("좌클릭 배치   ·   우클릭 회수")},
+        {TEXT("장애물을 보관함에 회수했습니다."), TEXT("회수")},
+        {TEXT("옮길 빈 칸을 클릭하세요."), TEXT("빈 칸 선택")},
+        {TEXT("상점에서 장애물을 먼저 구매하세요."), TEXT("재고 없음")},
+        {TEXT("배치 완료. 준비되면 발사하세요."), TEXT("배치 완료")},
+        {TEXT("상점에서 첫 장애물을 구매하세요."), TEXT("범퍼 구매")},
+        {TEXT("선택한 부품을 빈 칸에 배치하세요."), TEXT("빈 칸 선택")},
+        {TEXT("크레딧이 부족합니다."), TEXT("크레딧 부족")},
+        {TEXT("빈 칸을 클릭해 배치하세요."), TEXT("빈 칸 선택")},
+        {TEXT("구슬을 모두 쓸 때까지 판과 상점이 잠겨 있습니다."), TEXT("판 잠김")},
+        {TEXT("공이 이동하고 있습니다."), TEXT("구슬 이동")},
+        // The earlier sentence-style text, for HUDs that already went through it.
+        {TEXT("기계를 조준하고 눌러라."), TEXT("기계 조준 · 클릭")},
+        {TEXT("[1] 기계로"), TEXT("[1] 기계")},
+        {TEXT("Space. 놓으면 쏜다."), TEXT("Space  충전 · 발사")},
+        {TEXT("회수."), TEXT("회수")},
+        {TEXT("놓을 칸."), TEXT("빈 칸 선택")},
+        {TEXT("재고 없음."), TEXT("재고 없음")},
+        {TEXT("놓았다."), TEXT("배치 완료")},
+        {TEXT("범퍼를 사라."), TEXT("범퍼 구매")},
+        {TEXT("돈이 없다."), TEXT("크레딧 부족")},
+        {TEXT("구슬을 다 쓸 때까지 못 건드린다."), TEXT("판 잠김")},
+        {TEXT("굴러간다."), TEXT("구슬 이동")},
+    };
+    for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+    {
+        if (!Graph) continue;
+        for (UEdGraphNode* Node : Graph->Nodes)
+        {
+            if (!Node) continue;
+            for (UEdGraphPin* Pin : Node->Pins)
+            {
+                const FString* Line = Pin ? Lines.Find(Pin->DefaultValue) : nullptr;
+                if (!Line) continue;
+                Node->Modify();
+                Pin->DefaultValue = *Line;
+                ++Changed;
+            }
+        }
+    }
+    if (Changed) Blueprint->Modify();
+#endif
+    return Changed;
+}
+
 int32 UBumpitRoundSetup::ApplyBumperSlots(UBlueprint* Blueprint)
 {
     int32 Links = 0;

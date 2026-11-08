@@ -7,10 +7,24 @@
 // Round rules: build the board, fire every ball, and reach the target or the run ends.
 // State lives with the world, so reloading the level starts a fresh run.
 UCLASS()
-class UBumpitRound : public UWorldSubsystem
+class UBumpitRound : public UTickableWorldSubsystem
 {
     GENERATED_BODY()
 public:
+    virtual void Initialize(FSubsystemCollectionBase& Collection) override;
+    virtual void Deinitialize() override;
+    virtual void Tick(float DeltaTime) override;
+    virtual TStatId GetStatId() const override;
+
+    // Tilts the current ball has left; using the last one ends the run.
+    static int32 TiltsLeft(const UObject* Context);
+
+    // The share of the current ball's tilts that have been used, 0-1.
+    static float TiltLevel(const UObject* Context);
+
+    // The ball's score before its lane multiplier, and a 0-1 pulse after each hit.
+    static int32 LiveBallScore(const UObject* Context, float& OutPulse);
+
     // Counts one finished ball and returns the settlement message.
     UFUNCTION(BlueprintCallable, Category="Bumpit|Round", meta=(WorldContext="Context"))
     static FString RecordBall(const UObject* Context, int32 Points);
@@ -67,6 +81,13 @@ private:
     static int32 TargetFor(int32 Round);
     static int32 BreakBumpers(AActor* Table, TArray<int32>& Cells);
     void ShuffleLanes(AActor* Table);
+    void TickBlackout(float DeltaTime);
+    void TickCoins(float DeltaTime);
+    void TickClearShow(float DeltaTime);
+    void TickFailShow(float DeltaTime);
+    void UpdateScreen(int32 BallPoints);
+    void VoidBall();
+    void DrawOverlay(class AHUD* Hud, class UCanvas* Canvas);
 
     EState State = EState::Playing;
     int32 Round = 1;
@@ -76,4 +97,20 @@ private:
     TArray<int32> Multipliers;
     TSet<int32> FixedCells;
     UPROPERTY() TArray<TObjectPtr<class UTextRenderComponent>> LaneLabels;
+    TWeakObjectPtr<AActor> TableActor;
+    FVector StillAnchor = FVector::ZeroVector;
+    float StillSeconds = 0;
+    int32 StallKicks = 0;
+    bool bVoided = false;
+    float BlackoutSeconds = -1;
+    float CoinSeconds = -1;
+    float ClearShowSeconds = -1;
+    float FailShowSeconds = -1;
+    bool bTilted = false;
+    int32 CreditsBeforeBalls = 0;
+    int32 LastEarned = 0;
+    UPROPERTY() TObjectPtr<class ABumpitShow> Show;
+    FDelegateHandle PostRenderHandle;
+    int32 LastHits = 0;
+    double PulseStart = -1;
 };
