@@ -1,4 +1,4 @@
-"""Builds the black circle that closes in on the whole screen, HUD included, as tilts are used.
+"""Builds the dark red circle that closes in on the whole screen, HUD included, as tilts are used.
 Safe to run repeatedly.
 
 Run with the editor closed:
@@ -14,6 +14,8 @@ SOFTNESS = 0.2
 BOARD_OFFSET_X = -0.11
 # Matches PIXEL_GRID in apply_mood.py, so the circle has the same chunky pixels as the view.
 PIXEL_GRID = (420.0, 259.0)
+# The fog outside the circle, linear RGB: a dark blood red, barely off black. (0, 0, 0) is plain black.
+FOG_COLOR = (0.05, 0.004, 0.002)
 MEL = unreal.MaterialEditingLibrary
 EAL = unreal.EditorAssetLibrary
 
@@ -33,7 +35,9 @@ aspect.set_editor_property("default_value", 1.6)
 radius = MEL.create_material_expression(mat, unreal.MaterialExpressionScalarParameter, -700, 120)
 radius.set_editor_property("parameter_name", "Radius")
 radius.set_editor_property("default_value", 2.0)
-black = MEL.create_material_expression(mat, unreal.MaterialExpressionConstant3Vector, -300, -200)
+fog = MEL.create_material_expression(mat, unreal.MaterialExpressionVectorParameter, -300, -200)
+fog.set_editor_property("parameter_name", "FogColor")
+fog.set_editor_property("default_value", unreal.LinearColor(*FOG_COLOR, 1.0))
 
 circle = MEL.create_material_expression(mat, unreal.MaterialExpressionCustom, -300, 0)
 circle.set_editor_property("code", f"""
@@ -53,7 +57,7 @@ circle.set_editor_property("inputs", pins)
 MEL.connect_material_expressions(uv, "", circle, "UV")
 MEL.connect_material_expressions(aspect, "", circle, "Aspect")
 MEL.connect_material_expressions(radius, "", circle, "Radius")
-MEL.connect_material_property(black, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
+MEL.connect_material_property(fog, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
 MEL.connect_material_property(circle, "", unreal.MaterialProperty.MP_OPACITY)
 MEL.recompile_material(mat)
 EAL.save_loaded_asset(mat)
