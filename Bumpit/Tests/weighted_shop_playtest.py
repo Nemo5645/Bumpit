@@ -14,12 +14,12 @@ def draw_until(h,r,slot,typ):
 
 def exercise(h):
     r=p(h,'Rules');t=p(h,'Table');ball=p(t,'Ball')
-    check(len(offers(r))==5 and all(0<=v<=4 for v in offers(r)),'New stage initializes five valid offers')
+    check(len(offers(r))==5 and all(0<=v<=6 for v in offers(r)),'New stage initializes five valid offers')  # IDs 0-4 main's, 5 rubber, 6 lucky
     seen=set();duplicate=False;initialcredits=p(h,'Credits')
     for _ in range(60):
         call(h,'RerollShop');items=offers(r);seen.update(items)
         duplicate |= len(set(items))<len(items)
-    check(seen==set(range(5)),'All five ball types appear in random stock')
+    check(seen==set(range(7)),'All seven ball types appear in random stock')
     check(duplicate,'Independent draws allow duplicate ball offers')
     check(p(h,'Credits')==initialcredits and p(r,'MaxBalls')==0 and list(p(r,'BallQueue'))==[],'Free reroll does not alter credits or purchased balls')
     for slot,typ in enumerate([0,3,4]):
@@ -52,7 +52,7 @@ def exercise(h):
         call(h,'Settle',list(p(r,'Multipliers')).index(10))
         if i<2:call(h,'NextStage')
     call(r,'TickClearShow',10.0);call(r,'TickCoins',10.0)
-    check(all(0<=v<=4 for v in offers(r)) and p(r,'MaxBalls')==0,'Next stage refills every slot and resets purchase count')
+    check(all(0<=v<=6 for v in offers(r)) and p(r,'MaxBalls')==0,'Next stage refills every slot and resets purchase count')
     check(abs(ball.get_mass()/normalmass-1)<.02 and p(t,'WeightSpeedScale')==1,'Normal preview resets the previous weight effect')
     for slot in range(5):
         draw_until(h,r,slot,0);call(h,'PurchaseOffer',slot)

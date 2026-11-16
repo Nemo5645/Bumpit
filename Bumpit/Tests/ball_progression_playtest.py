@@ -30,7 +30,7 @@ def exercise(h):
     check(p(h,'Credits')==3 and p(r,'MaxBalls')==3 and sum(p(h,'Stock'))==0,'Shop buys three balls, not obstacles')
     call(h,'StartRound')
     check(p(h,'Phase')==0,'Cannot launch before choosing an obstacle')
-    call(h,'ChooseObstacle',-1);call(h,'ChooseObstacle',3)
+    call(h,'ChooseObstacle',-1);call(h,'ChooseObstacle',7)  # 7 obstacle cards: 0-2 main's, 3-6 gimmick bumpers
     check(p(r,'ChoicePending'),'Invalid choices do not consume the choice')
     for i in range(3):
         check(p(r,'ChoicePending'),f'Round {i+1} offers a fresh choice')

@@ -218,3 +218,51 @@ $testFile = (Resolve-Path './Bumpit/Tests/weighted_shop_playtest.py').Path
 외부 commandlet으로 자산을 수정할 때는 열린 에디터가 파일을 잠글 수 있다. 실제로 이번 작업 중 저장이 막힌 적이 있어 에디터를 저장·종료한 뒤 적용했다. 에디터에서 작업 중이라면 내부에서 수정하거나, 저장·종료 후 외부 변경을 적용한다.
 
 현재 조작은 SPACE 충전/발사·결과 확인, 1 테이블, 2 상점, WASD 이동, R 둘러보기, 좌클릭 배치, 우클릭 철거권 사용이다. 기존 3D 맵, 육각 그리드, 카메라 이동과 범퍼 반사 흐름은 유지했다.
+
+## 9. 기믹 범퍼·추가 구슬·테이블 확장 (2026-11-16, idibox)
+
+기반: `main` / `b859c41`. 위 1~8절의 진행 규칙은 그대로 두고 **추가만** 했다. 구슬 ID 0~4의 의미는 바꾸지 않았다.
+
+### 테이블 (`Tools/apply_table_tuning.py`)
+
+- 발사 레인을 바깥 벽 쪽 22cm 통로로 좁히고, 45° 반사판(`Deflector`) 대신 반지름 72cm 둥근 모서리(`TopArc00`~`11`)를 넣었다.
+- 레인이 줄어든 만큼 게임판이 577 → 623cm(약 1.08배)로 넓어졌다. 육각 칸, 골 9개, 장애물, 공(18 → 19.4cm)이 같은 비율로 커졌다. **분열공(`SplitBall`)도 같은 크기**이고, `MaybeSplit`의 레인 판정선도 새 칸막이(330)로 옮겼다.
+- 발사 속도 760~1120(기존 780~1180), 레인 정지 재발사 `RailKick` 1000.
+- 맵 `BumpitCell`에 에디터 전용 미리보기 테이블 `Pinball table preview`가 있다. 게임에서는 숨김·충돌 없음.
+
+### 장애물: 무료 선택 카드 3장 → 7장 (`Tools/apply_gimmicks.py`)
+
+| 카드 | 장애물 | 테이블 타입 | 효과 |
+| --- | --- | --- | --- |
+| 0~2 | 원형 범퍼, 왼쪽/오른쪽 반사판 | 1~3 | 기존 그대로 |
+| 3 | 폭발 범퍼 | 4 | 튕긴 뒤 속도 × `BlastBoost`(1.8) |
+| 4 | 자석 범퍼 | 5 | `MagnetRadius`(130cm) 안의 공을 끌어당김 (`MagnetPull`, 매 틱) |
+| 5 | 황금 범퍼 | 6 | 맞을 때마다 범퍼 충돌 `GoldHits`(4)회 추가 |
+| 6 | 워프 범퍼 | 7 | 판 위쪽(x 300, y ±220) 아무 데로 순간이동 |
+
+- 라운드당 **무료 선택 1회** 규칙은 그대로다. 카드가 7장이라 한 번에 3장씩 보이고, 마우스 휠이나 클릭으로 넘긴다(`UpdateInventory`, `InvScroll`). `NextSelection`의 3장 휠은 `UpdateBoard`에서 뺐다.
+- 기믹 범퍼는 원형 범퍼처럼 튕기고(`Bumper`, `RoundBumper` 태그), **분열공에도 똑같이 적용**된다(`ApplyGimmick`의 `Split` 인자, 황금은 `SplitHits`에 더함).
+- 배치·철거권·스테이지 유지는 기존 장애물과 같다(`SetObstacle` → `SetGimmicks`).
+- 카드 이름·색: HUD의 `ObstacleNames`, `ObstacleTints`. 머티리얼: `Materials/MI_Gimmick_*`.
+
+### 구슬 ID 5, 6
+
+| ID | 종류 | 가격 | 효과 |
+| --- | --- | --- | --- |
+| 5 | 고무공 | 4 | 벽 반발 95% (`BallWallHit`, `RubberBounce`) |
+| 6 | 행운의 공 | 5 | 골 배율 2배 (`LaneMultiplier`에서 곱함, 정산 `ScoreBall`에 반영) |
+
+- 상점 추첨은 0~6(`ResetShop`, `RerollOffers`), 구매 가능 ID도 0~6(`Purchase`).
+- `BallName`, `BallCost`, `BallDescription`, `RefreshBall`에 5, 6 분기를 **추가**했다. 0~4 분기는 그대로다.
+- 머티리얼: `MI_Ball_Rubber`, `MI_Ball_Lucky`.
+
+### 테스트
+
+- `Tests/gimmick_playtest.py`(새로 추가, 42개): 카드 7장, 배치·표시, 자석 목록, 철거, 폭발·황금·워프 효과, 5·6번 구슬 구매·발사·색·점수.
+- 기존 테스트는 범위만 넓혔다: `ball_progression_playtest.py`의 잘못된 카드 번호 3 → 7, `weighted_shop_playtest.py`의 상품 ID 0~4 → 0~6.
+- 2026-11-16 기준 `ball_progression` 77개, `weighted_shop` 34개, `gimmick` 42개 모두 통과(`-nullrhi`).
+- 실제 플레이 감각(자석 세기, 폭발 반동, 고무공 반발, 7장 카드 화면 배치)은 화면 있는 에디터에서 확인이 필요하다.
+
+### 스크립트
+
+순서: `apply_table_tuning.py` → `apply_gimmicks.py`. 둘 다 여러 번 실행해도 결과가 같다(두 번째 실행에서 바뀌는 값 0개 확인). 함수를 통째로 다시 쓰는 것은 새로 만든 함수와 `DrawBumperSlots`, `RefreshBall`, 그리고 5·6번을 더한 `BallName`/`BallCost`/`BallDescription`/`LaneMultiplier`뿐이다. 이 함수들을 에디터에서 고쳤다면 스크립트를 다시 실행하기 전에 스크립트 쪽 코드에도 반영해야 한다.
