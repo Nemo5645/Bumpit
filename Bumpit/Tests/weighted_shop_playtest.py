@@ -9,7 +9,7 @@ def offers(r):return [call(r,'OfferType',i) for i in range(5)]
 def draw_until(h,r,slot,typ):
     for _ in range(150):
         if call(r,'OfferType',slot)==typ:return
-        call(h,'RerollShop')
+        call(r,'RerollOffers')
     raise AssertionError('Expected type never appeared in random offers')
 
 def exercise(h):
@@ -17,11 +17,11 @@ def exercise(h):
     check(len(offers(r))==5 and all(0<=v<=6 for v in offers(r)),'New stage initializes five valid offers')  # IDs 0-4 main's, 5 rubber, 6 lucky
     seen=set();duplicate=False;initialcredits=p(h,'Credits')
     for _ in range(60):
-        call(h,'RerollShop');items=offers(r);seen.update(items)
+        call(r,'RerollOffers');items=offers(r);seen.update(items)
         duplicate |= len(set(items))<len(items)
     check(seen==set(range(7)),'All seven ball types appear in random stock')
     check(duplicate,'Independent draws allow duplicate ball offers')
-    check(p(h,'Credits')==initialcredits and p(r,'MaxBalls')==0 and list(p(r,'BallQueue'))==[],'Free reroll does not alter credits or purchased balls')
+    check(p(h,'Credits')==initialcredits and p(r,'MaxBalls')==0 and list(p(r,'BallQueue'))==[],'Internal offer sampling does not alter credits or purchased balls')
     for slot,typ in enumerate([0,3,4]):
         draw_until(h,r,slot,typ)
         before=p(h,'Credits');call(h,'PurchaseOffer',slot)
@@ -29,7 +29,7 @@ def exercise(h):
         queue=list(p(r,'BallQueue'));credits=p(h,'Credits')
         call(h,'PurchaseOffer',slot)
         check(p(h,'Credits')==credits and list(p(r,'BallQueue'))==queue,'An empty slot cannot be bought twice')
-        for _ in range(10):call(h,'RerollShop')
+        for _ in range(10):call(r,'RerollOffers')
         check(offers(r)[:slot+1]==[-1]*(slot+1),'Reroll never refills previously purchased slots')
         check(list(p(r,'BallQueue'))==queue,'Reroll preserves purchase order and types')
     check(list(p(r,'BallQueue'))==[0,3,4],'Normal, heavy and light balls queue in purchase order')
@@ -39,7 +39,7 @@ def exercise(h):
     check(offers(r)==remaining,'Invalid slot indices cannot change inventory')
     normalmass=0;normalspeed=0
     for i,typ in enumerate([0,3,4]):
-        call(h,'ChooseObstacle',0);call(h,'StartRound')
+        choose(h,0);call(h,'StartRound')
         check(p(r,'ActiveBallType')==typ and p(h,'Phase')==1,'Queued weight variant launches')
         mass=ball.get_mass();speed=ball.get_physics_linear_velocity().length()
         if i==0:normalmass=mass;normalspeed=speed

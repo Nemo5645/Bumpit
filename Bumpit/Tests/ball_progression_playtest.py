@@ -19,24 +19,42 @@ def check(condition,message):
 def p(obj,name): return obj.get_editor_property(name)
 def call(obj,name,*args): return obj.call_method(name,tuple(args))
 
+
+# Existing scenarios need specific obstacle kinds; force test offers only in memory.
+# Random offer integrity is exercised separately by action_tiles_playtest.py.
+import sys
+sys.path.insert(0,str(Path(__file__).parents[1]/'Tools'))
+from blueprint_graph import B,Graph,HUD,RULES
+g=Graph(HUD,'TestForceObstacleOffer',True)
+g.e.add_graph_input_parameter('Type',B._make_variable_type('int'))
+g.action('/Script/Engine.KismetArrayLibrary:Array_Clear',TargetArray=g.get('ObstacleOffers'))
+for offset in range(3):
+ typ=g.math('Percent_IntInt',g.math('Add_IntInt',g.arg('Type'),offset),10)
+ g.action('/Script/Engine.KismetArrayLibrary:Array_Add',TargetArray=g.get('ObstacleOffers'),NewItem=typ)
+g.set('OfferStage',g.get('CurrentRound',RULES));g.set('OfferRound',g.get('BallsUsed',RULES))
+B.compile_blueprint(HUD)
+def choose(h,typ):
+ if 0<=typ<10 and p(p(h,'Rules'),'ChoicePending'):call(h,'TestForceObstacleOffer',typ)
+ return call(h,'ChooseObstacle',typ)
+
 def exercise(h):
     r=p(h,'Rules');t=p(h,'Table')
     check(p(h,'Credits')==12 and p(r,'MaxBalls')==0,'Fresh game has 12 credits and no purchased balls')
     call(h,'StartRound')
     check(p(h,'Phase')==0,'Cannot launch without a purchased ball')
-    call(h,'ChooseObstacle',0)
+    choose(h,0)
     check(sum(p(h,'Stock'))==0,'Cannot claim a choice before purchasing a ball')
     for _ in range(3): call(h,'Purchase',0)
     check(p(h,'Credits')==3 and p(r,'MaxBalls')==3 and sum(p(h,'Stock'))==0,'Shop buys three balls, not obstacles')
     call(h,'StartRound')
     check(p(h,'Phase')==0,'Cannot launch before choosing an obstacle')
-    call(h,'ChooseObstacle',-1);call(h,'ChooseObstacle',7)  # 7 obstacle cards: 0-2 main's, 3-6 gimmick bumpers
+    choose(h,-1);choose(h,10)  # 7 obstacle cards: 0-2 main's, 3-6 gimmick bumpers
     check(p(r,'ChoicePending'),'Invalid choices do not consume the choice')
     for i in range(3):
         check(p(r,'ChoicePending'),f'Round {i+1} offers a fresh choice')
-        call(h,'ChooseObstacle',i)
+        choose(h,i)
         before=list(p(h,'Stock'))
-        call(h,'ChooseObstacle',(i+1)%3)
+        choose(h,(i+1)%3)
         check(list(p(h,'Stock'))==before,f'Round {i+1} cannot claim twice')
         call(h,'EditCell',i,False)
         check(p(h,'CellTypes')[i]==i+1,f'Round {i+1} can place selected obstacle')
@@ -68,7 +86,7 @@ def exercise(h):
     call(h,'EditCell',0,True);call(h,'EditCell',1,True);call(h,'EditCell',2,True)
     check(p(r,'RemovalTickets')==0 and list(p(h,'CellTypes'))[:3]==[0,0,3],'Exactly two obstacles can be demolished')
     check(sum(p(h,'Stock'))==0,'Demolition does not refund obstacle stock')
-    call(h,'Purchase',0);call(h,'ChooseObstacle',1);call(h,'StartRound')
+    call(h,'Purchase',0);choose(h,1);call(h,'StartRound')
     call(h,'Settle',list(p(r,'Multipliers')).index(10))
     check(p(r,'State')==1 and p(r,'BallsUsed')==1,'One purchased ball produces a one-round stage')
     call(r,'TickClearShow',10.0);call(r,'TickCoins',10.0)
@@ -80,7 +98,7 @@ def exercise(h):
     call(h,'Purchase',0);call(h,'Purchase',1);call(h,'Purchase',2)
     check(p(r,'MaxBalls')==5 and p(h,'Credits')==credits,'All ball types share the five-ball purchase cap')
     for i in range(5):
-        call(h,'ChooseObstacle',0)
+        choose(h,0)
         if i==1:call(h,'EditCell',19,False)
         call(h,'StartRound')
         check(p(r,'ActiveBallType')==[1,2,0,0,0][i],'Launch consumes the correct purchased ball type')

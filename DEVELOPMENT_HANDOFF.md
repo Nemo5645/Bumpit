@@ -266,3 +266,20 @@ $testFile = (Resolve-Path './Bumpit/Tests/weighted_shop_playtest.py').Path
 ### 스크립트
 
 순서: `apply_table_tuning.py` → `apply_gimmicks.py`. 둘 다 여러 번 실행해도 결과가 같다(두 번째 실행에서 바뀌는 값 0개 확인). 함수를 통째로 다시 쓰는 것은 새로 만든 함수와 `DrawBumperSlots`, `RefreshBall`, 그리고 5·6번을 더한 `BallName`/`BallCost`/`BallDescription`/`LaneMultiplier`뿐이다. 이 함수들을 에디터에서 고쳤다면 스크립트를 다시 실행하기 전에 스크립트 쪽 코드에도 반영해야 한다.
+
+
+## 10. 리롤 비용과 발사할 공 선택 (2026-11-16)
+
+- 리롤 비용은 스테이지마다 5크레딧부터 시작하고, 성공할 때마다 5씩 오른다(5 → 10 → 15 → …). `BP_RoundRules.RerollCost`, `ResetShop`에서 초기화.
+- `BP_BumpitHUD.RerollShop`은 잔액과 기존 구매 가능 조건을 먼저 확인한다. 실패 시 돈·비용·상품 모두 유지. 구매한 빈칸은 계속 비어 있다. 상점 버튼은 다음 비용을 표시한다.
+- 테이블/상점에서 Q로 아직 발사하지 않은 구매 공을 순환한다. `CycleBall`이 `BallsUsed` 위치의 공을 큐 끝으로 옮기고 `RefreshBall`로 재질·질량·속도를 갱신한다. 이미 사용한 큐 앞부분과 총 라운드 수는 유지한다.
+- 충전·발사·결과 표시·카메라 전환/둘러보기 중에는 교체하지 않는다. 남은 공이 1개면 그대로 유지한다. 테이블 발사 패널에 `Q 공 바꾸기 · 발사 전` 안내를 표시한다.
+- 이전 문서의 ‘구매 순서대로 발사’는 기본 순서이며, 이제 Q로 남은 순서를 바꿀 수 있다. 이전 무료 리롤 설명은 이 절로 대체한다.
+- 적용 스크립트: `Tools/apply_shop_controls.py`(1회용). 기존 `apply_weighted_ball_shop.py`를 다시 실행하면 최신 규칙을 덮어쓰므로 실행하지 않는다.
+- `Tests/shop_controls_playtest.py`: 비용 차감/증가, 잔액 부족, 구매 빈칸 유지, 발사 중 차단, 남은 공 순환과 프리뷰, 스테이지 비용 초기화. 테스트 전용 초기화 함수는 메모리에만 만들며 자산에는 저장하지 않는다.
+- `weighted_shop_playtest.py`의 무작위 상품 샘플링은 비용과 독립적으로 `RerollOffers`를 호출한다. 실제 UI 리롤 비용은 위 전용 테스트에서 확인한다.
+
+## 11. 액션 발판과 무료 랜덤 선택 (2026-11-18)
+
+대쉬·복사·회전 발판과 매 라운드 랜덤 3개 중 무료 1개 선택을 추가했다. 장애물은 상점에서 크레딧으로 구매하지 않는다. 상세 규칙과 구현 위치는 [ACTION_TILES_HANDOFF.md](ACTION_TILES_HANDOFF.md)를 참고한다.
+

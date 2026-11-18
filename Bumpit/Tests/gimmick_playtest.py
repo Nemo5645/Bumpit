@@ -23,7 +23,7 @@ def wait(seconds):
 def exercise(h):
     r=p(h,'Rules');t=p(h,'Table');ball=p(t,'Ball')
     parts={name:p(t,name) for name,_ in GIMMICKS}
-    check(len(p(h,'Stock'))==7 and list(p(h,'ObstacleNames'))[3:]==['폭발 범퍼','자석 범퍼','황금 범퍼','워프 범퍼'],'Seven obstacle cards: main three, then four gimmick bumpers')
+    check(len(p(h,'Stock'))==10 and list(p(h,'ObstacleNames'))[3:7]==['폭발 범퍼','자석 범퍼','황금 범퍼','워프 범퍼'],'Seven obstacle cards: main three, then four gimmick bumpers')
     check(all(part.get_instance_count()==48 and all(hidden(part,c) for c in range(48)) for part in parts.values()),'Every gimmick bumper has a hidden instance per cell')
     for _ in range(4):call(h,'Purchase',0)
     check(p(r,'MaxBalls')==4,'Four balls bought for four gimmick rounds')
@@ -31,7 +31,7 @@ def exercise(h):
     for k,(name,cell) in enumerate(GIMMICKS):
         card=3+k
         check(p(r,'ChoicePending'),f'Round {k+1} offers a free pick')
-        call(h,'ChooseObstacle',card)
+        choose(h,card)
         check(p(h,'Stock')[card]==1 and p(h,'Selected')==card,f'Card {card} is a free pick')
         call(h,'EditCell',cell,False)
         check(p(h,'CellTypes')[cell]==card+1 and p(h,'Stock')[card]==0,f'Card {card} places obstacle type {card+1}')
@@ -73,11 +73,11 @@ def exercise(h):
     call(h,'Purchase',6)
     check(list(p(r,'BallQueue'))==[5,6] and p(h,'Credits')==credits-9,'Rubber and lucky balls queue in purchase order at 4 + 5')
     lane=list(p(r,'Multipliers')).index(10)  # a new stage shuffles the goal multipliers
-    call(h,'ChooseObstacle',0);call(h,'StartRound')
+    choose(h,0);call(h,'StartRound')
     check(p(r,'ActiveBallType')==5 and p(h,'Phase')==1,'Rubber ball launches')
     check(call(r,'LaneMultiplier',lane)==10,'Rubber ball keeps the goal multiplier')
     call(h,'Settle',lane);call(h,'NextStage')
-    call(h,'ChooseObstacle',0);call(h,'StartRound')
+    choose(h,0);call(h,'StartRound')
     check(p(r,'ActiveBallType')==6 and ball.get_material(0).get_name()=='MI_Ball_Lucky','Lucky ball launches with its colour')
     check(call(r,'LaneMultiplier',lane)==20 and call(r,'ScoreBall',0,lane)==2000,'Lucky ball doubles the goal multiplier')
     before=p(h,'TotalPoints');call(h,'Settle',lane)
