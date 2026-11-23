@@ -51,7 +51,7 @@ def across(y):
 # --- Rounded corner ---------------------------------------------------------------------------------------
 CORNER = (350.0, OUTER)  # inner faces of the top rail (x) and the lane's outer rail (y)
 RADIUS = 72.0  # also rounds the playfield's top-right corner, below the lane exit
-SEGMENTS = 12  # straight pieces along the quarter circle
+SEGMENTS = 48  # straight pieces along the quarter circle (was 12: fast balls rattled on the corners between them)
 THICKNESS = 10.0
 WALL_Z = 15.0  # same height and depth as the rails
 WALL_SCALE_Z = 0.54
@@ -70,6 +70,7 @@ RETUNE = {
         ("GoalLabelLocal", [(-256.0, across(-256.0)), (64.0, 64.0 * SCALE)]),
         ("EventGraph", [(280.0, RIGHT - 5.0)]),  # gate shuts once the ball is past the lane line
         ("ShouldCloseGate", [(280.0, RIGHT - 5.0)]),
+        ("MaybeSplit", [(280.0, RIGHT - 5.0)]),  # split ball (main): no split while still in the launch lane
     ],
     RULES: [
         ("CreateLaneLabels", [(-256.0, across(-256.0)), (64.0, 64.0 * SCALE)]),
@@ -146,6 +147,8 @@ def lay_out_lane_and_field(bp):
     move(part("LaunchGate"), y=divider_y)
     ball_y = OUTER - LANE_WIDTH / 2
     move(part("Ball"), y=ball_y, sx=BALL_SCALE, sy=BALL_SCALE, sz=BALL_SCALE)
+    if "SplitBall" in found:  # main's split ball: same size as the ball (it waits off the table at z -3000)
+        move(part("SplitBall"), sx=BALL_SCALE, sy=BALL_SCALE, sz=BALL_SCALE)
     move(part("LauncherMark"), y=ball_y)
     for k in range(9):  # goal pockets: the original layout was y = -256 + 64k, 54 cm wide
         move(part(f"Goal{k}"), y=across(-256.0 + 64.0 * k), sy=0.54 * SCALE)
@@ -182,6 +185,9 @@ def scale_hex_centres(bp):
 
 def retune(bp, graph_name, pairs):
     """Sets literal pins holding an original value to the new one; pins already holding a new value are left."""
+    if graph_name not in [g.get_name() for g in BT.list_graphs(bp)]:
+        unreal.log(f"BUMPIT_RETUNE {bp.get_name()}.{graph_name}: no such graph, skipped")
+        return
     changed = 0
     for info in BT.get_node_infos(BT.find_nodes(BT.get_graph(bp, graph_name))):
         for p in info.input_pins:

@@ -1,31 +1,22 @@
-"""Gimmick bumpers and special balls. Safe to run repeatedly; tune the tables below.
-Run this first, then apply_shop_showcase.py (the shop list reads the ball stock this script adds).
+"""Gimmick bumpers and two more special balls, on top of main's ball-purchase progression (Nemo5645, 11/14).
+Main's rules stay as they are; this only adds to them. Safe to run repeatedly; tune the tables below.
+Run apply_table_tuning.py first (obstacle sizes follow its playfield scale).
 
 Run with the editor closed (-culture=en matters: the Blueprint text tools need English node names):
 UnrealEditor-Cmd.exe Bumpit.uproject -run=pythonscript -script=<this file> -unattended -nullrhi -culture=en
 
-Bumpers (obstacle types 4-7; 1-3 are the round bumper and the two deflectors). Each is an instanced mesh on
-BP_PinballTable with one hidden instance per hex cell, like the round bumpers, and bounces like a round bumper:
-  4 Blast  - after the bounce the ball's speed is multiplied by BlastBoost
-  5 Magnet - pulls the ball towards it inside MagnetRadius (MagnetPull, every tick)
-  6 Gold   - each bounce adds GoldHits extra hits (25 points each, before the lane multiplier)
-  7 Warp   - moves the ball to a random spot near the top of the table
-SetObstacle calls SetGimmicks first, so placing, removing and breaking cells all work for the new types.
+Obstacles: main lets the player pick one obstacle for free each round from three cards. There are now seven
+(Stock has 7 slots), shown three at a time - the mouse wheel or a click scrolls the list:
+  0 round bumper, 1 left deflector, 2 right deflector (main's)  -> obstacle types 1-3 on the table
+  3 Blast  - after the bounce the ball's speed is multiplied by BlastBoost          -> type 4
+  4 Magnet - pulls the balls towards it inside MagnetRadius (every tick)            -> type 5
+  5 Gold   - each bounce adds GoldHits extra bumper hits                            -> type 6
+  6 Warp   - moves the ball to a random spot near the top of the table              -> type 7
+The gimmick bumpers bounce like round bumpers and work on the split ball too.
 
-Balls (ball types 1-4; 0 is the normal ball, always available). Bought in the shop into BallStock, chosen on
-the machine screen with Q / E, used up one per launch:
-  1 Heavy  - mass x3, walls only give back 15% of the speed, score x2
-  2 Rubber - walls give back 95% of the speed
-  3 Lucky  - lane multiplier x2
-  4 Fire   - every bumper hit counts twice
-The wall bounce is worked out in BallWallHit (the engine's physical-material override isn't callable from
-Blueprint here); the score effects are multipliers spliced into BP_BumpitHUD.Settle.
-
-Machine screen: the inventory is a scrolling list (wheel or click). Q / E step through every ball; the ball
-waiting in the lane takes the chosen ball's colour (faded if it hasn't been bought) and the message line names
-it. A ball not bought can't be launched - Space neither charges nor fires until a bought ball is chosen.
-
-Obstacle sizes follow PLAYFIELD_SCALE, which must match apply_table_tuning.py (run that one before this).
+Balls: main's IDs 0-4 keep their meaning. Added to the shop draw:
+  5 Rubber - walls give back RUBBER_BOUNCE of the speed
+  6 Lucky  - goal (lane) multiplier x LUCKY_LANE_FACTOR
 """
 import unreal
 import toolset_registry
@@ -35,39 +26,46 @@ from editor_toolset.toolsets.blueprint import BlueprintTools as BT, ContainerTyp
 TABLE = "/Game/Bumpit/Blueprints/BP_PinballTable"
 HUD = "/Game/Bumpit/Blueprints/BP_BumpitHUD"
 RULES = "/Game/Bumpit/Blueprints/BP_RoundRules"
-SHOWCASE_MI = "/Game/Bumpit/Materials/Showcase/MI_Showcase_{:02d}"  # made by apply_shop_showcase.py
+MATERIALS = "/Game/Bumpit/Materials"
+PARENT_MATERIAL = "/Game/Bumpit/Mood/M_BumpitMood"  # what main's ball and cell colours are made from
 
 # --- Bumpers ----------------------------------------------------------------------------------------------
-GIMMICK_BUMPERS = [  # component, tag, shelf material index; obstacle types 4, 5, 6, 7 in this order
-    ("BlastBumpers", "Blast", 0),
-    ("MagnetBumpers", "Magnet", 1),
-    ("GoldBumpers", "Gold", 2),
-    ("WarpBumpers", "Warp", 3),
+# component, tag, card name, material name, colour, glow; obstacle types 4, 5, 6, 7 in this order
+GIMMICK_BUMPERS = [
+    ("BlastBumpers", "Blast", "폭발 범퍼", "MI_Gimmick_Blast", (0.95, 0.20, 0.03), 0.7),
+    ("MagnetBumpers", "Magnet", "자석 범퍼", "MI_Gimmick_Magnet", (0.16, 0.32, 0.95), 0.5),
+    ("GoldBumpers", "Gold", "황금 범퍼", "MI_Gimmick_Gold", (1.00, 0.78, 0.12), 0.9),
+    ("WarpBumpers", "Warp", "워프 범퍼", "MI_Gimmick_Warp", (0.62, 0.22, 0.95), 0.6),
 ]
+BASE_OBSTACLES = [  # main's three cards, as main draws them
+    ("원형 범퍼", (0.64, 0.52, 0.11)),
+    ("왼쪽 반사판", (0.85, 0.29, 0.03)),
+    ("오른쪽 반사판", (0.62, 0.025, 0.022)),
+]
+STOCK_SLOTS = len(BASE_OBSTACLES) + len(GIMMICK_BUMPERS)  # 7
 BLAST_BOOST = 1.8
 GOLD_HITS = 4
 MAGNET_RADIUS = 130.0  # cm
 MAGNET_STRENGTH = 1600.0  # cm/s^2 at the magnet, fading to 0 at the radius
 WARP_X, WARP_Y = 300.0, 220.0  # table space: near the top rail, anywhere across +-WARP_Y
-STOCK_SLOTS = 7  # round bumper, two deflectors, four gimmick bumpers
 
 # --- Balls ------------------------------------------------------------------------------------------------
-BALL_NAMES = ["기본 공", "쇳덩이 공", "고무공", "행운의 공", "불꽃 공"]
-BALL_MATERIALS = ["/Game/Bumpit/Materials/MI_Cell_950_960_990"] + [SHOWCASE_MI.format(i) for i in (4, 5, 6, 7)]
-BALL_MASS = [1.0, 3.0, 1.0, 1.0, 1.0]
-BALL_BOUNCE = [-1.0, 0.15, 0.95, -1.0, -1.0]  # share of speed a wall gives back; -1 leaves it to the engine
-BALL_HIT_FACTOR = [1, 1, 1, 1, 2]
-BALL_LANE_FACTOR = [1, 1, 1, 2, 1]
-BALL_SCORE_FACTOR = [1, 2, 1, 1, 1]
-FADE_TO_GREY = 0.6  # a ball not bought yet: its colour this far towards grey, and barely glowing
-FADED_MI = "/Game/Bumpit/Materials/Showcase/MI_BallFaded_{:02d}"
+RUBBER, LUCKY = 5, 6
+BALL_TYPES = 7  # IDs 0-6 in the shop draw
+RUBBER_BOUNCE = 0.95
+LUCKY_LANE_FACTOR = 2
+# id: name, description, price, material, colour, glow, mass scale, launch speed scale
+NEW_BALLS = {
+    RUBBER: ("고무공", "벽 반발 95%", 4, "MI_Ball_Rubber", (0.95, 0.35, 0.62), 0.3, 1.0, 1.0),
+    LUCKY: ("행운의 공", "골 배율 2배", 5, "MI_Ball_Lucky", (0.30, 0.95, 0.30), 0.6, 1.0, 1.0),
+}
 
 # Same as apply_table_tuning.py: the playfield grew from 577 to 623 cm across, and so did what's on it.
 PLAYFIELD_SCALE = (335.0 + 288.0) / (289.0 + 288.0)
 OBSTACLE_SCALE = 0.3 * PLAYFIELD_SCALE  # round bumpers were 0.3 (30 cm)
 OBSTACLE_Z = 15.0 * PLAYFIELD_SCALE  # standing on the bed
 
-# --- Machine screen inventory -----------------------------------------------------------------------------
+# --- Machine screen cards (main's layout: three 122-high cards from y 290, 130 apart) ---------------------
 INV_ROWS = 3
 INV_Y0, INV_STEP, INV_H = 290, 130, 122
 PANEL = "(R=0.016,G=0.010,B=0.008,A=0.86)"
@@ -75,7 +73,6 @@ SEL = "(R=0.95,G=0.06,B=0.05,A=1)"
 FRAME = "(R=0.30,G=0.15,B=0.07,A=1)"
 TEXT = "(R=0.86,G=0.79,B=0.66,A=1)"
 SUB = "(R=0.56,G=0.46,B=0.36,A=1)"
-GOLD = "(R=0.92,G=0.62,B=0.22,A=1)"
 ACCENT = "(R=0.95,G=0.36,B=0.16,A=1)"
 
 
@@ -103,7 +100,7 @@ def make_node(graph, type_id, pos, declaring_class=None):
     """Node factory for the DSL. Headless, the editor's node list has none of the Blueprints' own variables
     or functions, so "|GetX", "|SetX" and "|Func" are built with the member-node calls - on this Blueprint
     first, then on the other game Blueprints (those carry a "self" pin: pass :self <target>)."""
-    if not type_id.startswith("|"):
+    if not type_id.startswith("|") or type_id.endswith("..."):  # "|AddReturnNode..." is the editor's own
         if declaring_class is None and type_id in DECLARING:
             declaring_class = DECLARING[type_id].static_class()
         return BT.create_node(graph, type_id, pos, declaring_class)
@@ -143,13 +140,21 @@ def value_out(info):
     return next(p for p in info.output_pins if p.type_id != "Exec")
 
 
+def transpile(graph, code):
+    blueprint_dsl.Transpiler(
+        graph, make_node, BT.connect_pins, BT._get_node_info, BT.set_pin_value,
+        lambda g: BT.find_nodes(g), delete_node_fn=BT.delete_node,
+        find_node_types_fn=lambda f: BT.find_node_types(graph, f),
+    ).transpile(code)
+
+
 def function(bp, name, params, code):
     """Creates or rebuilds a function with no return value. params: [(name, type or class), ...]."""
     if name in [g.get_name() for g in BT.list_graphs(bp)]:
         graph = BT.get_graph(bp, name)
         for node in BT.find_nodes(graph):
             if isinstance(node, unreal.K2Node_FunctionResult):
-                raise RuntimeError(f"{name} returns a value; it can't be rebuilt whole")
+                raise RuntimeError(f"{name} returns a value; use rebuild_returning")
             if not isinstance(node, unreal.K2Node_FunctionEntry):
                 BT.delete_node(node)
     else:
@@ -159,11 +164,31 @@ def function(bp, name, params, code):
                 BT.add_function_param(graph, pname, ptype, True)
             else:
                 BT.add_object_function_param(graph, pname, ptype.static_class(), True)
-    blueprint_dsl.Transpiler(
-        graph, make_node, BT.connect_pins, BT._get_node_info, BT.set_pin_value,
-        lambda g: BT.find_nodes(g), delete_node_fn=BT.delete_node,
-        find_node_types_fn=lambda f: BT.find_node_types(graph, f),
-    ).transpile(code)
+    transpile(graph, code)
+
+
+def rebuild_returning(bp, name, code):
+    """Rebuilds an existing function that returns a value, keeping its signature (so every caller stays
+    wired). The DSL needs a result node to exist to know the function returns something, so one old result
+    node is kept while the new body is written, then removed."""
+    graph = BT.get_graph(bp, name)
+    keep = None
+    for node in BT.find_nodes(graph):
+        if isinstance(node, unreal.K2Node_FunctionEntry):
+            continue
+        if isinstance(node, unreal.K2Node_FunctionResult) and keep is None:
+            keep = node
+            continue
+        BT.delete_node(node)
+    if keep is None:
+        raise RuntimeError(f"{name} has no result node")
+    for p in BT._get_node_info(keep).input_pins:  # cut the kept node loose
+        for c in list(p.connected_pins):
+            BT.break_pins(c, p.pin_id)
+    transpile(graph, code)
+    results = [n for n in BT.find_nodes(graph) if isinstance(n, unreal.K2Node_FunctionResult)]
+    if len(results) > 1:
+        BT.delete_node(keep)
 
 
 def add_variables(bp, wanted, category):
@@ -178,12 +203,33 @@ def add_variables(bp, wanted, category):
         BT.set_variable_category(bp, name, category)
 
 
-def insert_call(bp, graph_name, host_pred, callee, args=(), after=None):
-    """Calls `callee` right after the exec output `after` of the node matched by host_pred (default "then"),
-    passing host output pins as arguments: args = [(callee pin, host pin), ...]. Skips if already there."""
+def insert_after(graph, host, callee, args=(), literals=()):
+    """Puts a call to `callee` right after `host` (on its "then"), unless host's "then" already leads to it.
+    args = [(callee pin, source PinID)], literals = [(callee pin, value)]."""
+    out = pin(host, "then")
+    nxt = [BT._get_node_info(c.node) for c in out.connected_pins]
+    if any(n.type_id == f"|{callee}" for n in nxt):
+        return False
+    existing = {i.node.get_name() for i in infos_of(graph)}
+    make_node(graph, f"|{callee}", unreal.IntPoint(host.position.x + 200, host.position.y + 260))
+    call = next(i for i in infos_of(graph) if i.node.get_name() not in existing)
+    BT.connect_pins(out.pin_id, pin(call, "execute").pin_id)
+    for n in nxt:
+        BT.connect_pins(pin(call, "then").pin_id, pin(n, "execute").pin_id)
+    call = BT._get_node_info(call.node)
+    for callee_pin, source in args:
+        BT.connect_pins(source, pin(call, callee_pin).pin_id)
+    for callee_pin, value in literals:
+        BT.set_pin_value(pin(call, callee_pin).pin_id, value)
+    return True
+
+
+def insert_call(bp, graph_name, host_pred, callee, args=()):
+    """Calls `callee` once, right after the node matched by host_pred, passing host output pins as
+    arguments: args = [(callee pin, host pin)]. Extra copies (from older runs) are cut out of the chain."""
     graph = BT.get_graph(bp, graph_name)
     calls = [i for i in infos_of(graph) if i.type_id == f"|{callee}"]
-    for extra in calls[1:]:  # an earlier version could add a second call; cut extras out of the chain
+    for extra in calls[1:]:
         for source in pin(extra, "execute").connected_pins:
             for target in pin(extra, "then").connected_pins:
                 BT.connect_pins(source, target)
@@ -191,20 +237,58 @@ def insert_call(bp, graph_name, host_pred, callee, args=(), after=None):
     if calls:
         return
     host = next(i for i in infos_of(graph) if host_pred(i))
-    out = pin(host, after or "then")
-    nxt = [BT._get_node_info(c.node) for c in out.connected_pins]
-    existing = {i.node.get_name() for i in infos_of(graph)}
-    make_node(graph, f"|{callee}", unreal.IntPoint(host.position.x + 200, host.position.y + 260))
-    call = next(i for i in infos_of(graph) if i.node.get_name() not in existing)
-    BT.connect_pins(out.pin_id, pin(call, "execute").pin_id)
-    for n in nxt:
-        BT.connect_pins(pin(call, "then").pin_id, pin(n, "execute").pin_id)
-    for callee_pin, host_pin in args:
-        BT.connect_pins(pin(host, host_pin).pin_id, pin(BT._get_node_info(call.node), callee_pin).pin_id)
+    insert_after(graph, host, callee, [(c, pin(host, h).pin_id) for c, h in args])
 
 
 def is_entry(i):
     return isinstance(i.node, unreal.K2Node_FunctionEntry)
+
+
+GREATER = ("Utilities|Operators|Greater(>)", "Math|Integer|integer>integer")
+RANDOM_INT = ("Math|Random|RandomIntegerInRange",)
+
+
+def set_literals(bp, graph_name, node_types, pin_name, old, new):
+    """Sets pin `pin_name` on nodes of any of `node_types` from `old` to `new` (only pins still holding
+    `old`; a rerun finds nothing left to change)."""
+    wanted = {t.lower() for t in node_types}
+    changed = 0
+    for info in infos_of(BT.get_graph(bp, graph_name)):
+        if info.type_id.lower() not in wanted:
+            continue
+        p = next((p for p in info.input_pins if p.name == pin_name), None)
+        if p is None or p.connected_pins:
+            continue
+        try:
+            if abs(float(p.value) - old) < 1e-6:
+                BT.set_pin_value(p.pin_id, str(new))
+                changed += 1
+        except ValueError:
+            pass
+    unreal.log(f"BUMPIT_LITERAL {bp.get_name()}.{graph_name} {pin_name} {old}->{new}: {changed}")
+    return changed
+
+
+def colour_material(name, colour, glow):
+    """A colour of main's M_BumpitMood, like main's MI_Ball_* and MI_Cell_* (Color, Glow, Roughness)."""
+    mel = unreal.MaterialEditingLibrary
+    path = f"{MATERIALS}/{name}"
+    if unreal.EditorAssetLibrary.does_asset_exist(path):
+        mi = unreal.load_asset(path)
+    else:
+        mi = unreal.AssetToolsHelpers.get_asset_tools().create_asset(
+            name, MATERIALS, unreal.MaterialInstanceConstant, unreal.MaterialInstanceConstantFactoryNew())
+    mel.set_material_instance_parent(mi, unreal.load_asset(PARENT_MATERIAL))
+    mel.set_material_instance_vector_parameter_value(mi, "Color", unreal.LinearColor(*colour, 1.0))
+    mel.set_material_instance_scalar_parameter_value(mi, "Glow", glow)
+    mel.set_material_instance_scalar_parameter_value(mi, "Roughness", 0.82)
+    mel.update_material_instance(mi)
+    unreal.EditorAssetLibrary.save_loaded_asset(mi)
+    return mi
+
+
+def mat_path(name):
+    return f"{MATERIALS}/{name}.{name}"
 
 
 # --- Table ------------------------------------------------------------------------------------------------
@@ -235,15 +319,17 @@ def add_component(bp, name, cls):
 
 
 def build_table_parts(table):
+    """One instanced mesh per gimmick bumper, a hidden instance per hex cell - same as main's round bumpers,
+    whose mesh, collision and tags (Bumper, RoundBumper) they copy, plus their own tag."""
     _, _, found = subobjects(table)
     round_bumpers = found["RoundBumpers"][1]
     cells = [round_bumpers.get_instance_transform(i, False) for i in range(round_bumpers.get_instance_count())]
-    for name, tag, mi in GIMMICK_BUMPERS:
+    for name, tag, _, material, colour, glow in GIMMICK_BUMPERS:
         part = add_component(table, name, unreal.InstancedStaticMeshComponent)
         part.set_editor_property("static_mesh", round_bumpers.static_mesh)
         part.set_editor_property("body_instance", round_bumpers.get_editor_property("body_instance"))
-        part.set_editor_property("override_materials", [unreal.load_asset(SHOWCASE_MI.format(mi))])
-        part.set_editor_property("component_tags", list(round_bumpers.component_tags) + [unreal.Name(tag)])
+        part.set_editor_property("override_materials", [colour_material(material, colour, glow)])
+        part.set_editor_property("component_tags", [t for t in round_bumpers.component_tags] + [unreal.Name(tag)])
         part.clear_instances()
         for transform in cells:
             part.add_instance(transform, False)
@@ -264,186 +350,165 @@ def hide_or_show(component, type_id):
 SET_GIMMICKS = """
 (fn SetGimmicks (Index Type)
   (if (and (>= Index 0) (< Index 48))
-    (bind c (|HexCenter :Index Index))""" + "".join(hide_or_show(name, 4 + i) for i, (name, _, _) in enumerate(GIMMICK_BUMPERS)) + """
+    (bind c (|HexCenter :Index Index))""" + "".join(hide_or_show(g[0], 4 + i) for i, g in enumerate(GIMMICK_BUMPERS)) + """
     (if (== Type 5)
       (Utilities|Array|AddUnique (|GetMagnetCells) Index)
       (else
         (Utilities|Array|RemoveItem (|GetMagnetCells) Index)))))
 """
 
+# After main's ReflectBumper on either ball. Split = the hit was the split ball (its hits are SplitHits).
 APPLY_GIMMICK = f"""
-(fn ApplyGimmick (Comp)
+(fn ApplyGimmick (Comp TargetBall Split)
   (bind now (Utilities|Time|GetGameTimeinSeconds))
   (if (> (- now (|GetLastGimmickTime)) 0.1)
     (if (Components|ComponentHasTag Comp "Blast")
       (|SetLastGimmickTime now)
-      (|SetIncomingVelocity (* (Physics|GetPhysicsLinearVelocity (|GetBall)) (|GetBlastBoost)))
-      (Physics|SetPhysicsLinearVelocity (|GetBall) (|GetIncomingVelocity) false))
+      (Physics|SetPhysicsLinearVelocity TargetBall (* (Physics|GetPhysicsLinearVelocity TargetBall) (|GetBlastBoost)) false))
     (if (Components|ComponentHasTag Comp "Gold")
       (|SetLastGimmickTime now)
-      (|SetHits (+ (|GetHits) (|GetGoldHits))))
+      (if Split
+        (|SetSplitHits (+ (|GetSplitHits) (|GetGoldHits)))
+        (else
+          (|SetHits (+ (|GetHits) (|GetGoldHits))))))
     (if (Components|ComponentHasTag Comp "Warp")
       (|SetLastGimmickTime now)
-      (Transformation|SetWorldLocation (|GetBall) (Math|Transform|TransformLocation (Transformation|GetActorTransform) (Math|Vector|MakeVector {WARP_X} (Math|Random|RandomFloatinRange -{WARP_Y} {WARP_Y}) 12.0)) false true))))
+      (Transformation|SetWorldLocation TargetBall (Math|Transform|TransformLocation (Transformation|GetActorTransform) (Math|Vector|MakeVector {WARP_X} (Math|Random|RandomFloatinRange -{WARP_Y} {WARP_Y}) 12.0)) false true))))
+"""
+
+PULL_BALL = """
+(fn PullBall (TargetBall)
+  (if (Physics|IsSimulatingPhysics TargetBall)
+    (for i (range (Utilities|Array|Length (|GetMagnetCells)))
+      (bind d (- (Math|Transform|TransformLocation (Transformation|GetActorTransform) (|HexCenter :Index (Utilities|Array|Get(acopy) (|GetMagnetCells) i))) (Transformation|GetWorldLocation TargetBall)))
+      (bind dist (Math|Vector|VectorLength d))
+      (if (and (< dist (|GetMagnetRadius)) (> dist 1.0))
+        (Physics|AddForce TargetBall (* (/ d dist) (* (|GetMagnetStrength) (- 1.0 (/ dist (|GetMagnetRadius))))) "None" true)))))
 """
 
 MAGNET_PULL = """
 (fn MagnetPull ()
-  (if (and (Physics|IsSimulatingPhysics (|GetBall)) (> (Utilities|Array|Length (|GetMagnetCells)) 0))
-    (for i (range (Utilities|Array|Length (|GetMagnetCells)))
-      (bind d (- (Math|Transform|TransformLocation (Transformation|GetActorTransform) (|HexCenter :Index (Utilities|Array|Get(acopy) (|GetMagnetCells) i))) (Transformation|GetWorldLocation (|GetBall))))
-      (bind dist (Math|Vector|VectorLength d))
-      (if (and (< dist (|GetMagnetRadius)) (> dist 1.0))
-        (Physics|AddForce (|GetBall) (* (/ d dist) (* (|GetMagnetStrength) (- 1.0 (/ dist (|GetMagnetRadius))))) "None" true)))))
+  (if (> (Utilities|Array|Length (|GetMagnetCells)) 0)
+    (|PullBall :TargetBall (|GetBall))
+    (|PullBall :TargetBall (|GetSplitBall))))
 """
 
-SHOW_BALL_CHOICE = """
-(fn ShowBallChoice (BallType Owned)
-  (if (Utilities|Array|IsValidIndex (|GetBallMaterials) BallType)
-    (if Owned
-      (Rendering|Material|SetMaterial (|GetBall) 0 (Utilities|Array|Get(acopy) (|GetBallMaterials) BallType))
-      (else
-        (Rendering|Material|SetMaterial (|GetBall) 0 (Utilities|Array|Get(acopy) (|GetBallFadedMaterials) BallType))))))
-"""
-
-APPLY_BALL_TYPE = """
-(fn ApplyBallType (BallType)
-  (|SetActiveBallType BallType)
-  (if (Utilities|Array|IsValidIndex (|GetBallMass) BallType)
-    (Physics|SetMassScale (|GetBall) "None" (Utilities|Array|Get(acopy) (|GetBallMass) BallType))
-    (Rendering|Material|SetMaterial (|GetBall) 0 (Utilities|Array|Get(acopy) (|GetBallMaterials) BallType))))
-"""
-
-BALL_WALL_HIT = """
+# Rubber ball: the wall bounce is worked out here (the physical-material override isn't callable from
+# Blueprint). Only the main ball can be a rubber ball; main's split ball comes from the split ball type.
+BALL_WALL_HIT = f"""
 (fn BallWallHit (Comp NormalImpulse)
   (bind now (Utilities|Time|GetGameTimeinSeconds))
-  (bind bounce (Utilities|Array|Get(acopy) (|GetBallBounce) (|GetActiveBallType)))
-  (if (and (>= bounce 0.0) (and (not (Components|ComponentHasTag Comp "RoundBumper")) (> (- now (|GetLastBounceTime)) 0.05)))
+  (if (and (== (|GetActiveBallType :self (|GetActiveRules)) {RUBBER}) (and (not (Components|ComponentHasTag Comp "RoundBumper")) (> (- now (|GetLastBounceTime)) 0.05)))
     (bind n (Math|Vector|Normalize NormalImpulse))
     (bind v (|GetIncomingVelocity))
     (bind dot (Math|Vector|DotProduct v n))
     (if (and (< dot 0.0) (< (Math|Float|Absolute(Float) (Math|Vector|DotProduct n (Transformation|GetActorUpVector))) 0.7))
       (|SetLastBounceTime now)
-      (|SetIncomingVelocity (- v (* n (* dot (+ 1.0 bounce)))))
+      (|SetIncomingVelocity (- v (* n (* dot (+ 1.0 (|GetRubberBounce))))))
       (Physics|SetPhysicsLinearVelocity (|GetBall) (|GetIncomingVelocity) false))))
 """
+# ActiveRules is set by the HUD's CreateRoundRules when the game starts, before any ball can hit anything.
+
+
+def bound_event(graph, component):
+    for info in infos_of(graph):
+        if isinstance(info.node, unreal.K2Node_ComponentBoundEvent):
+            try:
+                name = str(info.node.get_editor_property("component_property_name"))
+            except Exception:
+                name = info.node.get_node_title().split("(")[-1].rstrip(")")
+            if name == component:
+                return info
+    raise RuntimeError(f"No hit event for {component}")
+
+
+def wire_gimmicks_after_reflect(table):
+    """After each of main's ReflectBumper calls (one per ball), ApplyGimmick on the same ball."""
+    graph = BT.get_graph(table, "EventGraph")
+    events = {"|GetBall": bound_event(graph, "Ball"), "|GetSplitBall": bound_event(graph, "SplitBall")}
+    for info in infos_of(graph):
+        if info.type_id != "|ReflectBumper":
+            continue
+        source = pin(info, "TargetBall").connected_pins[0]
+        getter = BT._get_node_info(source.node).type_id
+        if getter not in events:
+            raise RuntimeError(f"ReflectBumper target is {getter}")
+        insert_after(graph, info, "ApplyGimmick",
+                     [("Comp", pin(events[getter], "OtherComp").pin_id), ("TargetBall", source)],
+                     [("Split", "true" if getter == "|GetSplitBall" else "false")])
 
 
 def apply_table(table):
     build_table_parts(table)
     add_variables(table, [
-        ("MagnetCells", "int", ContainerType.ARRAY), ("LastGimmickTime", "float", None), ("LastBounceTime", "float", None),
-        ("ActiveBallType", "int", None), ("BlastBoost", "float", None), ("GoldHits", "int", None),
-        ("MagnetRadius", "float", None), ("MagnetStrength", "float", None),
-        ("BallMass", "float", ContainerType.ARRAY), ("BallBounce", "float", ContainerType.ARRAY),
-        ("BallMaterials", unreal.MaterialInterface, ContainerType.ARRAY),
-        ("BallFadedMaterials", unreal.MaterialInterface, ContainerType.ARRAY),
+        ("MagnetCells", "int", ContainerType.ARRAY), ("LastGimmickTime", "float", None),
+        ("LastBounceTime", "float", None), ("BlastBoost", "float", None), ("GoldHits", "int", None),
+        ("MagnetRadius", "float", None), ("MagnetStrength", "float", None), ("RubberBounce", "float", None),
     ], "Gimmicks")
     BT.compile_blueprint(table)
     function(table, "SetGimmicks", [("Index", "int"), ("Type", "int")], SET_GIMMICKS)
-    function(table, "ApplyGimmick", [("Comp", unreal.PrimitiveComponent)], APPLY_GIMMICK)
-    function(table, "MagnetPull", [], MAGNET_PULL)
-    function(table, "ApplyBallType", [("BallType", "int")], APPLY_BALL_TYPE)
-    function(table, "ShowBallChoice", [("BallType", "int"), ("Owned", "bool")], SHOW_BALL_CHOICE)
+    function(table, "ApplyGimmick", [("Comp", unreal.PrimitiveComponent), ("TargetBall", unreal.PrimitiveComponent),
+                                     ("Split", "bool")], APPLY_GIMMICK)
+    function(table, "PullBall", [("TargetBall", unreal.PrimitiveComponent)], PULL_BALL)
     function(table, "BallWallHit", [("Comp", unreal.PrimitiveComponent), ("NormalImpulse", "Vector")], BALL_WALL_HIT)
     BT.compile_blueprint(table)
+    function(table, "MagnetPull", [], MAGNET_PULL)
+    BT.compile_blueprint(table)
     insert_call(table, "SetObstacle", is_entry, "SetGimmicks", [("Index", "Index"), ("Type", "Type")])
-    hit = lambda i: isinstance(i.node, unreal.K2Node_ComponentBoundEvent)
-    insert_call(table, "EventGraph", hit, "BallWallHit", [("Comp", "OtherComp"), ("NormalImpulse", "NormalImpulse")])
-    insert_call(table, "EventGraph", lambda i: i.type_id == "|ReflectBumper", "ApplyGimmick")
     events = BT.get_graph(table, "EventGraph")
-    reflect_call = next(i for i in infos_of(events) if i.type_id == "|ApplyGimmick")
-    if not len(pin(reflect_call, "Comp").connected_pins):
-        BT.connect_pins(pin(next(i for i in infos_of(events) if hit(i)), "OtherComp").pin_id, pin(reflect_call, "Comp").pin_id)
+    ball_hit = bound_event(events, "Ball")
+    insert_call(table, "EventGraph", lambda i: i.node == ball_hit.node, "BallWallHit",
+                [("Comp", "OtherComp"), ("NormalImpulse", "NormalImpulse")])
+    wire_gimmicks_after_reflect(table)
     tick = lambda i: isinstance(i.node, unreal.K2Node_Event) and "Tick" in i.node.get_node_title()
     insert_call(table, "EventGraph", tick, "MagnetPull")
     BT.compile_blueprint(table, warnings_as_errors=True)
     cdo = BT.get_default_object(table)
     for name, value in (("BlastBoost", BLAST_BOOST), ("GoldHits", GOLD_HITS), ("MagnetRadius", MAGNET_RADIUS),
-                        ("MagnetStrength", MAGNET_STRENGTH), ("BallMass", BALL_MASS), ("BallBounce", BALL_BOUNCE),
-                        ("BallMaterials", [unreal.load_asset(p) for p in BALL_MATERIALS]),
-                        ("BallFadedMaterials", faded_ball_materials())):
+                        ("MagnetStrength", MAGNET_STRENGTH), ("RubberBounce", RUBBER_BOUNCE)):
         cdo.set_editor_property(name, value)
 
 
-def faded_ball_materials():
-    """A paler, greyer copy of each special ball's material, for balls not bought yet. Index 0 (the normal
-    ball, always owned) keeps its own material."""
-    mel = unreal.MaterialEditingLibrary
-    out = [unreal.load_asset(BALL_MATERIALS[0])]
-    for i, path in enumerate(BALL_MATERIALS[1:], start=1):
-        source = unreal.load_asset(path)
-        colour = mel.get_material_instance_vector_parameter_value(source, "Color")
-        grey = 0.5
-        faded = unreal.LinearColor(colour.r + (grey - colour.r) * FADE_TO_GREY, colour.g + (grey - colour.g) * FADE_TO_GREY,
-                                   colour.b + (grey - colour.b) * FADE_TO_GREY, 1.0)
-        target = FADED_MI.format(i)
-        if unreal.EditorAssetLibrary.does_asset_exist(target):
-            mi = unreal.load_asset(target)
-        else:
-            folder, name = target.rsplit("/", 1)
-            mi = unreal.AssetToolsHelpers.get_asset_tools().create_asset(
-                name, folder, unreal.MaterialInstanceConstant, unreal.MaterialInstanceConstantFactoryNew())
-        mel.set_material_instance_parent(mi, source.get_editor_property("parent"))
-        mel.set_material_instance_vector_parameter_value(mi, "Color", faded)
-        mel.set_material_instance_scalar_parameter_value(mi, "Glow", 0.03)
-        mel.update_material_instance(mi)
-        unreal.EditorAssetLibrary.save_loaded_asset(mi)
-        out.append(mi)
-    return out
+# --- Round rules: balls 5 and 6 in main's ball tables -----------------------------------------------------
+def chain(values, fallback, i=0):
+    """main's (if (== Type 0) (return a) (elif (== Type 1) (return b) ... (else (return fallback))))"""
+    if i == len(values):
+        return f"(else\n  (return {fallback}))"
+    return f"({'if' if i == 0 else 'elif'} (== Type {i})\n  (return {values[i]})\n  {chain(values, fallback, i + 1)})"
+
+
+def quoted(s):
+    return '"' + s + '"'
+
+
+# main's values for IDs 0-4, then ours.
+BALL_NAME = ["일반공", "범퍼 강화공", "분열공", "무거운 공", "가벼운 공"] + [NEW_BALLS[i][0] for i in (RUBBER, LUCKY)]
+BALL_COST = [3, 5, 5, 4, 4] + [NEW_BALLS[i][2] for i in (RUBBER, LUCKY)]
+BALL_DESCRIPTION = ["기본 구슬", "범퍼 충돌 점수만 2배", "첫 반사 때 공이 2개로 분열", "질량 2배 · 발사 속도 85%",
+                    "질량 0.5배 · 발사 속도 115%"] + [NEW_BALLS[i][1] for i in (RUBBER, LUCKY)]
+
+LANE_MULTIPLIER = f"""
+(fn LaneMultiplier (Lane)
+  (bind luck (select (== (|GetActiveBallType) {LUCKY}) {LUCKY_LANE_FACTOR} 1))
+  (if (Utilities|Array|IsValidIndex (|GetMultipliers) Lane)
+    (return (* (Utilities|Array|Get(acopy) (|GetMultipliers) Lane) luck))
+    (else
+      (return luck))))
+"""
+
+
+def apply_rules(rules):
+    rebuild_returning(rules, "BallName", "(fn BallName (Type)\n  " + chain([quoted(s) for s in BALL_NAME], quoted("구매 완료")) + ")")
+    rebuild_returning(rules, "BallCost", "(fn BallCost (Type)\n  " + chain([str(c) for c in BALL_COST], "0") + ")")
+    rebuild_returning(rules, "BallDescription", "(fn BallDescription (Type)\n  " + chain(
+        [quoted(s) for s in BALL_DESCRIPTION], quoted("다음 스테이지에서 다시 채워집니다")) + ")")
+    rebuild_returning(rules, "LaneMultiplier", LANE_MULTIPLIER)
+    for graph in ("ResetShop", "RerollOffers"):  # the shop draws IDs 0..BALL_TYPES-1
+        set_literals(rules, graph, RANDOM_INT, "Max", 4, BALL_TYPES - 1)
+    BT.compile_blueprint(rules, warnings_as_errors=True)
 
 
 # --- HUD --------------------------------------------------------------------------------------------------
-PURCHASE = """
-(fn Purchase (Type)
-  (bind owned (Utilities|Array|Length (|GetStock)))
-  (bind locked (|IsBoardLocked :self (|GetRules)))
-  (if (and (== (|GetPhase) 0) (Utilities|Array|IsValidIndex (|GetShopPrices) Type))
-    (if (and (< Type owned) locked)
-      (|SetMessage "판 잠김")
-      (elif (< (|GetCredits) (Utilities|Array|Get(acopy) (|GetShopPrices) Type))
-        (|SetMessage "크레딧 부족")
-        (else
-          (|SetCredits (- (|GetCredits) (Utilities|Array|Get(acopy) (|GetShopPrices) Type)))
-          (if (< Type owned)
-            (Utilities|Array|SetArrayElem (|GetStock) Type (+ (Utilities|Array|Get(acopy) (|GetStock) Type) 1))
-            (|SetSelected Type)
-            (|SetMessage "빈 칸 선택")
-            (else
-              (Utilities|Array|SetArrayElem (|GetBallStock) (+ (- Type owned) 1) (+ (Utilities|Array|Get(acopy) (|GetBallStock) (+ (- Type owned) 1)) 1))
-              (|SetSelectedBall (+ (- Type owned) 1))
-              (|SetMessage "공 구매 · 기계에서 Q / E"))))))))
-"""
-
-OWNED = "(or (== (|GetSelectedBall) 0) (> (Utilities|Array|Get(acopy) (|GetBallStock) (|GetSelectedBall)) 0))"
-
-START_ROUND = f"""
-(fn StartRound ()
-  (if (== (|GetPhase) 0)
-    (if (not {OWNED})
-      (|SetCharging false)
-      (|SetPower 0.0)
-      (|SetMessage "구매하지 않은 공 · Q / E로 바꾸기")
-      (else
-        (|SetActiveBall (|GetSelectedBall))
-        (if (> (|GetSelectedBall) 0)
-          (Utilities|Array|SetArrayElem (|GetBallStock) (|GetSelectedBall) (- (Utilities|Array|Get(acopy) (|GetBallStock) (|GetSelectedBall)) 1)))
-        (if (<= (Utilities|Array|Get(acopy) (|GetBallStock) (|GetSelectedBall)) 0)
-          (|SetSelectedBall 0))
-        (|ApplyBallType :self (|GetTable) :BallType (|GetActiveBall))
-        (|Launch :self (|GetTable) :Power (|GetPower))
-        (|SetCharging false)
-        (|SetPhase 1)
-        (|SetMessage "구슬 이동")))))
-"""
-
-STEP_BALL = """
-(fn StepBall (Step)
-  (bind n (Utilities|Array|Length (|GetBallStock)))
-  (if (> n 0)
-    (|SetSelectedBall (Math|Integer|%(Integer) (+ (|GetSelectedBall) Step) n))))
-"""
-
 UPDATE_INVENTORY = f"""
 (fn UpdateInventory ()
   (if (== (|GetStation) 1)
@@ -462,27 +527,10 @@ UPDATE_INVENTORY = f"""
       (if (< (|GetSelected) (|GetInvScroll))
         (|SetInvScroll (|GetSelected)))
       (if (>= (|GetSelected) (+ (|GetInvScroll) {INV_ROWS}))
-        (|SetInvScroll (+ (- (|GetSelected) {INV_ROWS}) 1))))
-    (if (== (|GetPhase) 0)
-      (if (Game|Player|WasInputKeyJustPressed pc "E")
-        (|StepBall :Step 1))
-      (if (Game|Player|WasInputKeyJustPressed pc "Q")
-        (|StepBall :Step (- (Utilities|Array|Length (|GetBallStock)) 1)))
-      (if (and (not {OWNED}) (|GetCharging))
-        (|SetCharging false)
-        (|SetPower 0.0))
-      (if (!= (+ (* (|GetSelectedBall) 2) (Math|Conversions|ToInteger(Boolean) {OWNED})) (|GetShownBall))
-        (|SetShownBall (+ (* (|GetSelectedBall) 2) (Math|Conversions|ToInteger(Boolean) {OWNED})))
-        (|ShowBallChoice :self (|GetTable) :BallType (|GetSelectedBall) :Owned {OWNED})
-        (if (== (|GetSelectedBall) 0)
-          (|SetMessage (Utilities|String|Append "공: " (Utilities|Array|Get(acopy) (|GetBallNames) 0)))
-          (elif {OWNED}
-            (|SetMessage (Utilities|String|BuildString(Integer) (Utilities|String|Append "공: " (Utilities|Array|Get(acopy) (|GetBallNames) (|GetSelectedBall))) "  ×" (Utilities|Array|Get(acopy) (|GetBallStock) (|GetSelectedBall)) ""))
-            (else
-              (|SetMessage (Utilities|String|Append (Utilities|String|Append "공: " (Utilities|Array|Get(acopy) (|GetBallNames) (|GetSelectedBall))) "  · 미보유")))))))))
+        (|SetInvScroll (+ (- (|GetSelected) {INV_ROWS}) 1))))))
 """
-# ShownBall holds ball x 2 + owned, so buying the ball on screen also refreshes its look.
 
+BAR_H = INV_ROWS * INV_STEP - (INV_STEP - INV_H)
 DRAW_BUMPER_SLOTS = f"""
 (fn DrawBumperSlots ()
   (for row (range {INV_ROWS})
@@ -494,24 +542,60 @@ DRAW_BUMPER_SLOTS = f"""
         (|Frame :X 886.0 :Y y :W 295.0 :H {INV_H}.0 :Line 4.0 :Tint "{SEL}")
         (else
           (|Frame :X 886.0 :Y y :W 295.0 :H {INV_H}.0 :Line 2.0 :Tint "{FRAME}")))
-      (|Panel :X 902.0 :Y (+ y 18.0) :W 86.0 :H 86.0 :Tint (Utilities|Array|Get(acopy) (|GetShowcaseColors) item))
-      (|Label :Caption (Utilities|Array|Get(acopy) (|GetShowcaseNames) item) :X 1002.0 :Y (+ y 30.0) :Size 1.05 :Tint "{TEXT}")
-      (|Label :Caption (Utilities|String|BuildString(Integer) "" "보관함: " (Utilities|Array|Get(acopy) (|GetStock) item) "개") :X 1002.0 :Y (+ y 68.0) :Size 1.0 :Tint "{SUB}")))
+      (|Panel :X 902.0 :Y (+ y 18.0) :W 86.0 :H 86.0 :Tint (Utilities|Array|Get(acopy) (|GetObstacleTints) item))
+      (|Label :Caption (Utilities|Array|Get(acopy) (|GetObstacleNames) item) :X 1002.0 :Y (+ y 30.0) :Size 1.12 :Tint "{TEXT}")
+      (|Label :Caption (Utilities|String|BuildString(Integer) "" "보관함: " (Utilities|Array|Get(acopy) (|GetStock) item) "개") :X 1002.0 :Y (+ y 68.0) :Size 1.0 :Tint "{SUB}")
+      (if (|GetChoicePending :self (|GetRules))
+        (|Label :Caption "클릭: 무료 선택" :X 1002.0 :Y (+ y 94.0) :Size 0.78 :Tint "{ACCENT}")
+        (else
+          (|Label :Caption "선택 완료 · 보관함 사용" :X 1002.0 :Y (+ y 94.0) :Size 0.72 :Tint "{SUB}")))))
   (if (> (Utilities|Array|Length (|GetStock)) {INV_ROWS})
-    (|Panel :X 1185.0 :Y {INV_Y0}.0 :W 5.0 :H {INV_ROWS * INV_STEP - (INV_STEP - INV_H)}.0 :Tint "{FRAME}")
-    (|Panel :X 1185.0 :Y (+ {INV_Y0}.0 (/ (* {INV_ROWS * INV_STEP - (INV_STEP - INV_H)}.0 (Math|Conversions|ToFloat(Integer) (|GetInvScroll))) (Math|Conversions|ToFloat(Integer) (Utilities|Array|Length (|GetStock))))) :W 5.0 :H (/ {(INV_ROWS * INV_STEP - (INV_STEP - INV_H)) * INV_ROWS}.0 (Math|Conversions|ToFloat(Integer) (Utilities|Array|Length (|GetStock)))) :Tint "{ACCENT}"))
+    (|Panel :X 1185.0 :Y {INV_Y0}.0 :W 5.0 :H {BAR_H}.0 :Tint "{FRAME}")
+    (|Panel :X 1185.0 :Y (+ {INV_Y0}.0 (/ (* {BAR_H}.0 (Math|Conversions|ToFloat(Integer) (|GetInvScroll))) (Math|Conversions|ToFloat(Integer) (Utilities|Array|Length (|GetStock))))) :W 5.0 :H (/ {BAR_H * INV_ROWS}.0 (Math|Conversions|ToFloat(Integer) (Utilities|Array|Length (|GetStock)))) :Tint "{ACCENT}"))
   (|DrawTiltCount)
   (|DrawSideArrow :Caption "상점")
   (|DrawLiveScore))
 """
 
 
+def refresh_branch(type_id, mass, material, speed):
+    return (f"(Physics|SetMassScale ball \"None\" {mass})\n"
+            f"      (Rendering|Material|SetMaterial ball 0 \"{material}\")\n"
+            f"      (|SetWeightSpeedScale :self (|GetTable) :WeightSpeedScale {speed})")
+
+
+def refresh_ball_code():
+    """main's RefreshBall, with branches for balls 5 and 6 after main's five."""
+    branches = [  # main's: mass scale, material, launch speed scale
+        (1.0, mat_path("MI_Cell_950_960_990"), 1.0),
+        (1.0, mat_path("MI_Ball_Score"), 1.0),
+        (1.0, mat_path("MI_Ball_Demolition"), 1.0),
+        (2.0, mat_path("MI_Ball_Heavy"), 0.85),
+        (0.5, mat_path("MI_Ball_Light"), 1.15),
+    ] + [(NEW_BALLS[i][6], mat_path(NEW_BALLS[i][3]), NEW_BALLS[i][7]) for i in (RUBBER, LUCKY)]
+    body = ""
+    for i in reversed(range(len(branches))):
+        mass, material, speed = branches[i]
+        inner = refresh_branch(i, mass, material, speed)
+        body = (f"({'if' if i == 0 else 'elif'} (== (|GetActiveBallType :self (|GetRules)) {i})\n      {inner}"
+                + (f"\n      {body}" if body else "") + ")")
+    return f"""
+(fn RefreshBall ()
+  (bind ball (|GetBall :self (|GetTable)))
+  (|SetActiveBallType :self (|GetRules) :ActiveBallType 0)
+  (if (> (|GetMaxBalls :self (|GetRules)) (|GetBallsUsed :self (|GetRules)))
+    (|SetActiveBallType :self (|GetRules) :ActiveBallType (Utilities|Array|Get(acopy) (|GetBallQueue :self (|GetRules)) (|GetBallsUsed :self (|GetRules)))))
+  (|SetSpecialUsed :self (|GetRules) :SpecialUsed false)
+  {body})
+"""
+
+
 def drop_old_wheel(hud):
-    """UpdateBoard opened with Selected = NextSelection(...), the old 3-slot wheel and click handling on the
-    machine screen. UpdateInventory does that now, so that step goes."""
+    """main's UpdateBoard opens with Selected = NextSelection(...), the old 3-card wheel and click handling.
+    UpdateInventory does that now for the 7-card list, so that step goes."""
     graph = BT.get_graph(hud, "UpdateBoard")
     for info in infos_of(graph):
-        if info.type_id != "|SetSelected":
+        if not info.type_id.endswith("|SetSelected"):
             continue
         sources = [BT._get_node_info(c.node) for c in pin(info, "Selected").connected_pins]
         if not sources or sources[0].type_id != "|NextSelection":
@@ -523,14 +607,12 @@ def drop_old_wheel(hud):
         BT.delete_node(sources[0].node)
 
 
-BOARD_HEAD = ("UpdateShopView", "UpdateInventory")  # what UpdateBoard runs first, in this order
+BOARD_HEAD = ("UpdateInventory",)  # what UpdateBoard runs first, in this order
 
 
 def order_board_head(hud):
-    """Rewires the start of UpdateBoard as entry -> UpdateShopView -> UpdateInventory -> the rest, whatever
-    state it is in. apply_gimmicks.py and apply_shop_showcase.py each insert one of these calls, and reruns
-    in a different order once left UpdateInventory wired back into UpdateShopView: an endless loop, with
-    the rest of UpdateBoard (walking, charging, launching, clicks) cut off. Same function in both scripts."""
+    """Rewires the start of UpdateBoard as entry -> UpdateInventory -> the rest, whatever state it is in
+    (an older Mood version once left these calls wired in a circle: an endless loop)."""
     graph = BT.get_graph(hud, "UpdateBoard")
 
     def exec_pins(info, direction):
@@ -543,9 +625,6 @@ def order_board_head(hud):
     head = [i for i in head if i is not None]
     head_keys = {i.node.get_path_name() for i in head}
     by_key = {i.node.get_path_name(): i for i in infos}
-
-    # The rest of UpdateBoard: the first node after the head calls, or, if the head wiring loops or
-    # dead-ends, the one exec chain that nothing runs any more.
     rest, seen, cur = None, set(), entry
     while cur is not None and rest is None:
         seen.add(cur.node.get_path_name())
@@ -564,9 +643,6 @@ def order_board_head(hud):
         if len(orphans) != 1:
             raise RuntimeError(f"UpdateBoard: cannot tell where the rest starts ({[o.type_id for o in orphans]})")
         rest = orphans[0]
-
-    # Unhook the entry and the head calls, then chain them in order.
-    # Re-read each node right before cutting: cutting one end of a wire also clears the other end.
     for node in [entry.node] + [i.node for i in head]:
         for p in exec_pins(BT._get_node_info(node), "out"):
             for c in list(p.connected_pins):
@@ -575,12 +651,30 @@ def order_board_head(hud):
         for p in exec_pins(BT._get_node_info(node), "in"):
             for c in list(p.connected_pins):
                 BT.break_pins(c, p.pin_id)
-    chain = [entry] + [BT._get_node_info(i.node) for i in head] + [BT._get_node_info(rest.node)]
-    for a, b in zip(chain, chain[1:]):
+    chain_nodes = [entry] + [BT._get_node_info(i.node) for i in head] + [BT._get_node_info(rest.node)]
+    for a, b in zip(chain_nodes, chain_nodes[1:]):
         out = next(p for p in exec_pins(BT._get_node_info(a.node), "out") if p.name == "then")
         inp = next(p for p in exec_pins(BT._get_node_info(b.node), "in") if p.name == "execute")
         BT.connect_pins(out.pin_id, inp.pin_id)
-    unreal.log(f"BUMPIT_BOARD_HEAD entry -> {' -> '.join(i.type_id for i in chain[1:])}")
+    unreal.log(f"BUMPIT_BOARD_HEAD entry -> {' -> '.join(i.type_id for i in chain_nodes[1:])}")
+
+
+def remap_choice_cards(hud):
+    """PointerInput: main's card clicks call ChooseObstacle(0/1/2) by card position. With the list scrolled,
+    card k is obstacle k + InvScroll."""
+    graph = BT.get_graph(hud, "PointerInput")
+    for info in infos_of(graph):
+        if info.type_id != "|ChooseObstacle":
+            continue
+        type_pin = pin(info, "Type")
+        if type_pin.connected_pins:
+            continue  # already remapped
+        row = int(float(type_pin.value or 0))
+        add = BT.create_node(graph, "Utilities|Operators|Add", unreal.IntPoint(info.position.x - 260, info.position.y + 140))
+        scroll = BT._get_node_info(make_node(graph, "|GetInvScroll", unreal.IntPoint(info.position.x - 480, info.position.y + 140)))
+        BT.connect_pins(value_out(scroll).pin_id, pin(BT._get_node_info(add), "A").pin_id)
+        BT.set_pin_value(pin(BT._get_node_info(add), "B").pin_id, str(row))
+        BT.connect_pins(value_out(BT._get_node_info(add)).pin_id, type_pin.pin_id)
 
 
 def stock_slots(hud):
@@ -592,63 +686,31 @@ def stock_slots(hud):
                 BT.set_pin_value(pin(info, "Size").pin_id, str(STOCK_SLOTS))
 
 
-def ball_factor(graph, source, factor_array, pos):
-    """Returns the output pin of (source * factor_array[ActiveBall])."""
-    mul = BT.create_node(graph, "Utilities|Operators|Multiply", pos)
-    arr = BT._get_node_info(make_node(graph, f"|Get{factor_array}", unreal.IntPoint(pos.x - 420, pos.y + 90)))
-    ball = BT._get_node_info(make_node(graph, "|GetActiveBall", unreal.IntPoint(pos.x - 420, pos.y + 170)))
-    get = BT.create_node(graph, "Utilities|Array|Get(acopy)", unreal.IntPoint(pos.x - 200, pos.y + 110))
-    BT.connect_pins(value_out(arr).pin_id, pin(BT._get_node_info(get), "Array").pin_id)
-    info = BT._get_node_info(get)
-    BT.connect_pins(value_out(ball).pin_id, next(p for p in info.input_pins if p.name != "Array").pin_id)
-    BT.connect_pins(source, pin(BT._get_node_info(mul), "A").pin_id)
-    BT.connect_pins(value_out(BT._get_node_info(get)).pin_id, pin(BT._get_node_info(mul), "B").pin_id)
-    return value_out(BT._get_node_info(mul))
-
-
-def score_factors(hud):
-    """Settle: RoundScore(Scored, Hits x hit factor, Multiplier x lane factor) x score factor."""
-    graph = BT.get_graph(hud, "Settle")
-    score = next(i for i in infos_of(graph) if i.type_id == "|RoundScore")
-    hits_src = pin(score, "Hits").connected_pins[0]
-    if "Multiply" in BT._get_node_info(hits_src.node).type_id or "*" in BT._get_node_info(hits_src.node).type_id:
-        return  # already done
-    pos = score.position
-    BT.connect_pins(ball_factor(graph, hits_src, "BallHitFactor", unreal.IntPoint(pos.x - 300, pos.y + 200)).pin_id, pin(score, "Hits").pin_id)
-    mult_src = pin(score, "Multiplier").connected_pins[0]
-    BT.connect_pins(ball_factor(graph, mult_src, "BallLaneFactor", unreal.IntPoint(pos.x - 300, pos.y + 420)).pin_id, pin(score, "Multiplier").pin_id)
-    consumers = list(value_out(score).connected_pins)
-    total = ball_factor(graph, value_out(score).pin_id, "BallScoreFactor", unreal.IntPoint(pos.x + 300, pos.y + 200))
-    for target in consumers:
-        BT.connect_pins(total.pin_id, target)
-
-
 def apply_hud(hud):
+    for i in (RUBBER, LUCKY):
+        name, _, _, material, colour, glow, _, _ = NEW_BALLS[i]
+        colour_material(material, colour, glow)
     add_variables(hud, [
-        ("BallStock", "int", ContainerType.ARRAY), ("BallNames", "string", ContainerType.ARRAY),
-        ("BallHitFactor", "int", ContainerType.ARRAY), ("BallLaneFactor", "int", ContainerType.ARRAY),
-        ("BallScoreFactor", "int", ContainerType.ARRAY), ("SelectedBall", "int", None), ("ShownBall", "int", None),
-        ("ActiveBall", "int", None), ("InvScroll", "int", None),
-    ], "Balls")
-    BT.compile_blueprint(hud)
-    function(hud, "StepBall", [("Step", "int")], STEP_BALL)
+        ("InvScroll", "int", None), ("ObstacleNames", "string", ContainerType.ARRAY),
+        ("ObstacleTints", "LinearColor", ContainerType.ARRAY),
+    ], "Gimmicks")
     BT.compile_blueprint(hud)
     function(hud, "UpdateInventory", [], UPDATE_INVENTORY)
-    function(hud, "Purchase", [], PURCHASE)
-    function(hud, "StartRound", [], START_ROUND)
     function(hud, "DrawBumperSlots", [], DRAW_BUMPER_SLOTS)
+    function(hud, "RefreshBall", [], refresh_ball_code())
     BT.compile_blueprint(hud)
     insert_call(hud, "UpdateBoard", is_entry, "UpdateInventory")
     drop_old_wheel(hud)
     order_board_head(hud)
+    remap_choice_cards(hud)
     stock_slots(hud)
-    score_factors(hud)
+    set_literals(hud, "ChooseObstacle", GREATER, "B", 2, STOCK_SLOTS - 1)
+    set_literals(hud, "Purchase", GREATER, "B", 4, BALL_TYPES - 1)
     BT.compile_blueprint(hud, warnings_as_errors=True)
     cdo = BT.get_default_object(hud)
-    for name, value in (("BallStock", [0] * len(BALL_NAMES)), ("BallNames", BALL_NAMES),
-                        ("BallHitFactor", BALL_HIT_FACTOR), ("BallLaneFactor", BALL_LANE_FACTOR),
-                        ("BallScoreFactor", BALL_SCORE_FACTOR), ("SelectedBall", 0), ("ShownBall", -1),
-                        ("ActiveBall", 0), ("InvScroll", 0)):
+    names = [n for n, _ in BASE_OBSTACLES] + [g[2] for g in GIMMICK_BUMPERS]
+    tints = [unreal.LinearColor(*c, 1.0) for _, c in BASE_OBSTACLES] + [unreal.LinearColor(*g[4], 1.0) for g in GIMMICK_BUMPERS]
+    for name, value in (("ObstacleNames", names), ("ObstacleTints", tints), ("InvScroll", 0)):
         cdo.set_editor_property(name, value)
 
 
@@ -656,7 +718,8 @@ with toolset_registry.tool_raising_exceptions():
     BPS.update(table=unreal.load_asset(TABLE), hud=unreal.load_asset(HUD), rules=unreal.load_asset(RULES))
     DECLARING["Rendering|Material|SetMaterial"] = unreal.PrimitiveComponent
     apply_table(BPS["table"])
+    apply_rules(BPS["rules"])
     apply_hud(BPS["hud"])
-    for bp in (BPS["table"], BPS["hud"]):
+    for bp in BPS.values():
         unreal.EditorAssetLibrary.save_loaded_asset(bp)
 unreal.log("BUMPIT_GIMMICKS_APPLIED")
