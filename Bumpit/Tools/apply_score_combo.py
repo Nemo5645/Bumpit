@@ -5,8 +5,9 @@ UnrealEditor-Cmd.exe Bumpit.uproject -run=pythonscript -script=<this file> -unat
 Combo points (BP_PinballTable): every counted bumper hit (the ball, the split ball, copies) adds
     ComboPointStep x (combo - 1) x bumper multiplier          (10 per step; the bumper-boost ball doubles it)
 so the 2nd hit of a chain is worth +10, the 10th +90, the 20th +190, the 50th +490, with no cap. ComboPoints is
-cleared at each launch and Settle adds it to the round's points on top of the balls' own scores (it is not
-multiplied by the goal, so it counts even when a ball ends in the x0 goal or is lost).
+cleared at each launch and Settle adds it to the round's points on top of the balls' own scores.
+(apply_score_tally.py then routes it through BP_RoundRules.ScoreCombo: the combo is multiplied by the ball's goal
+like the ball's own points, so a ball in the x0 goal, or a lost ball, scores 0 however long the combo was.)
 
 Live score (BP_BumpitHUD.DrawLiveScore): the box stays as it is (470, 40, 180 x 72); the number in it now shows
 the balls' points plus ComboPoints, and it jumps at milestones that double: ScoreMilestoneBase x 2^k =
@@ -110,7 +111,7 @@ def add_combo_to_settle(hud):
         for p in i.input_pins:
             for c in p.connected_pins:
                 src = BT._get_node_info(c.node)
-                if any(BT._get_node_info(cc.node).type_id == '|GetComboPoints' for q in src.input_pins for cc in q.connected_pins):
+                if any(BT._get_node_info(cc.node).type_id in ('|GetComboPoints', '|ScoreCombo') for q in src.input_pins for cc in q.connected_pins):
                     return
     total = next(i for i in adds if any(BT._get_node_info(c.node).type_id == '|GetCopyPoints'
                                         for p in i.input_pins for c in p.connected_pins))
